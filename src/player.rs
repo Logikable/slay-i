@@ -594,6 +594,15 @@ impl IsmctsAgent {
             rng: Rand::default(),
         }
     }
+    // Deterministic search RNG: a fixed game seed then yields a repeatable run,
+    // which makes the seeded eval a noiseless objective for CMA tuning and
+    // measurements reproducible. Decorrelated from the game's own seed stream.
+    pub fn with_seed(iters: u32, seed: u64) -> Self {
+        Self {
+            iters,
+            rng: Rand::seed_from_u64(seed ^ 0x9E3779B97F4A7C15),
+        }
+    }
 }
 
 impl CombatAgent for IsmctsAgent {
@@ -1490,6 +1499,14 @@ fn run_worker(
     use crate::relic::RelicClass;
     use std::sync::atomic::Ordering;
     let mut s = RunStats::default();
+    // Wall-clock budget per run. At the 30-iter tuning budget a legit clear
+    // finishes well under the 1500ms default, so it only aborts degenerate
+    // (bloated-deck) policies; raise it via FULLRUN_DEADLINE_MS when measuring
+    // at higher ISMCTS iters, where boss-reaching runs legitimately take longer.
+    let deadline_ms: u64 = std::env::var("FULLRUN_DEADLINE_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1500);
     loop {
         let i = counter.fetch_add(1, Ordering::Relaxed);
         if i >= trials {
@@ -1498,9 +1515,8 @@ fn run_worker(
         let seed = base.wrapping_add(i as u64);
         // Isolate latent engine panics from rare card/monster combos so one bad
         // seed doesn't abort the whole sweep; count it and move on.
-        // Wall-clock budget per run: legit clears finish in well under a second,
-        // so 1.5s only ever aborts a degenerate (bloated-deck) policy's runs.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut game = GameBuilder::default()
                 .seed(seed)
@@ -1511,7 +1527,7 @@ fn run_worker(
                 let mut a = FullRunAgent::with_weights(GreedyAgent, w);
                 play_full_run(&mut game, &mut a, deadline)
             } else {
-                let mut a = FullRunAgent::with_weights(IsmctsAgent::new(iters), w);
+                let mut a = FullRunAgent::with_weights(IsmctsAgent::with_seed(iters, seed), w);
                 play_full_run(&mut game, &mut a, deadline)
             }
         }));

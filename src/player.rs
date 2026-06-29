@@ -773,8 +773,8 @@ pub struct Weights {
 // CMA-tuned optimum from the first run (held-out 11.7% clear vs 8.6% for the
 // original hand-tuned values); re-running CMA now searches around it.
 const WEIGHT_BASE: [f64; NPARAM] = [
-    4.98, 2.07, 6.54, 4.83, 6.95, -2.51, 11.74, -89.29, 1.0, 29.3, 0.688, 2.70,
-    7.52,
+    6.89, -2.45, 8.72, 2.42, 6.53, 4.31, 7.28, -100.0, 0.921, 26.2, 0.876, 2.0,
+    5.70,
 ];
 const WEIGHT_RANGE: [f64; NPARAM] =
     [6., 6., 6., 6., 6., 6., 8., 40., 0.3, 40., 0.4, 5., 5.];

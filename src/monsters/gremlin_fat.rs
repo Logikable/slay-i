@@ -6,6 +6,7 @@ use crate::{
     status::Status,
 };
 
+#[derive(Clone)]
 pub struct GremlinFat;
 
 impl GremlinFat {
@@ -15,6 +16,9 @@ impl GremlinFat {
 }
 
 impl MonsterBehavior for GremlinFat {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "fat gremlin"
     }

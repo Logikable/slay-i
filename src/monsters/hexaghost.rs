@@ -23,6 +23,7 @@ enum Action {
     Inferno,
 }
 
+#[derive(Clone)]
 pub struct Hexaghost {
     action: Action,
     divider_amount: i32,
@@ -48,6 +49,9 @@ impl Hexaghost {
 }
 
 impl MonsterBehavior for Hexaghost {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "hexaghost"
     }

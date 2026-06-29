@@ -47,10 +47,13 @@ impl std::fmt::Debug for ChooseCardInDrawToPlaceInHandAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct FetchCardFromDrawGameState(CardType);
 
 impl GameState for FetchCardFromDrawGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         for (i, c) in game.draw_pile.get_all().iter().enumerate() {

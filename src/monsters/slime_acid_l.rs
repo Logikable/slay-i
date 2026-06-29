@@ -25,6 +25,7 @@ enum Action {
     Split,
 }
 
+#[derive(Clone)]
 pub struct SlimeAcidL {
     action: Action,
     history: MoveHistory<Action>,
@@ -40,6 +41,9 @@ impl SlimeAcidL {
 }
 
 impl MonsterBehavior for SlimeAcidL {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "acid slime L"
     }

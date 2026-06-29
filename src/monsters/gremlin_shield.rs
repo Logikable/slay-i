@@ -5,6 +5,7 @@ use crate::{
     queue::ActionQueue,
 };
 
+#[derive(Clone)]
 pub struct GremlinShield {
     is_bashing: bool,
 }
@@ -16,6 +17,9 @@ impl GremlinShield {
 }
 
 impl MonsterBehavior for GremlinShield {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "shield gremlin"
     }

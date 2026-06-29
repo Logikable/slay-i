@@ -18,6 +18,7 @@ enum Action {
     Escape,
 }
 
+#[derive(Clone)]
 pub struct Looter {
     action: Action,
     turn: i32,
@@ -33,6 +34,9 @@ impl Looter {
 }
 
 impl MonsterBehavior for Looter {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "looter"
     }

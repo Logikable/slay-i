@@ -98,7 +98,7 @@ impl Card {
             | SearingBlow | Rampage | Uppercut | SeverSoul | Carnage | Hemokinesis | Dropkick
             | Pummel | BloodForBlood | RecklessCharge | SpotWeakness | Disarm | Bludgeon | Feed
             | FiendFire | SwiftStrike | FlashOfSteel | MindBlast | Bite | RitualDagger
-            | HandOfGreed | DebugKill => true,
+            | HandOfGreed | DarkShackles | DebugKill => true,
             Blind | Trip => self.upgrade_count == 0,
             _ => false,
         }

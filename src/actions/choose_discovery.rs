@@ -53,7 +53,7 @@ impl std::fmt::Debug for ChooseDiscoveryAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChooseDiscoveryGameState {
     classes: Vec<CardClass>,
     amount: i32,
@@ -61,6 +61,9 @@ struct ChooseDiscoveryGameState {
 }
 
 impl GameState for ChooseDiscoveryGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, _: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         for &class in &self.classes {

@@ -28,10 +28,13 @@ impl std::fmt::Debug for ChooseCardInHandToPlaceOnTopOfDrawAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChooseCardInHandToPlaceOnTopOfDrawGameState;
 
 impl GameState for ChooseCardInHandToPlaceOnTopOfDrawGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         for i in 0..game.hand.len() {

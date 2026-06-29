@@ -83,12 +83,15 @@ impl Step for DualWieldStep {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct DualWieldGameState {
     amount: i32,
 }
 
 impl GameState for DualWieldGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         for (i, c) in game.hand.iter().enumerate() {

@@ -9,6 +9,7 @@ use crate::{
     cards::{CardClass, CardCost, CardType},
     combat::{EndTurnStep, PlayCardStep},
     game::{CombatType, CreatureRef, Game, GameStatus, Rand},
+    map::RoomType,
     monster::Intent,
     status::Status,
     step::Step,
@@ -386,6 +387,12 @@ enum MoveKey {
         upgraded: bool,
         target: Option<usize>,
     },
+    // potion_index is stable across determinizations (potions aren't hidden),
+    // so unlike a hand index it can key a shared tree branch directly.
+    UsePotion {
+        potion_index: usize,
+        target: Option<usize>,
+    },
 }
 
 // Legal moves at the current decision as (stable key, concrete step), deduped
@@ -429,6 +436,35 @@ fn legal_moves(game: &Game) -> Vec<(MoveKey, Box<dyn Step>)> {
                     MoveKey::Play {
                         class,
                         upgraded,
+                        target: t,
+                    },
+                    step,
+                );
+            }
+        }
+    }
+    // Potions: try every (potion, target) and keep whatever is actually legal,
+    // so ISMCTS can spend an emergency potion instead of hoarding it.
+    for (pi, p) in game.potions.iter().enumerate() {
+        if p.is_none() {
+            continue;
+        }
+        let mut targets: Vec<Option<usize>> = vec![None];
+        for mi in 0..game.monsters.len() {
+            if game.monsters[mi].creature.is_actionable() {
+                targets.push(Some(mi));
+            }
+        }
+        for t in targets {
+            let step: Box<dyn Step> = Box::new(crate::game::UsePotionStep {
+                potion_index: pi,
+                target: t,
+            });
+            if present(&step) {
+                push(
+                    &mut out,
+                    MoveKey::UsePotion {
+                        potion_index: pi,
                         target: t,
                     },
                     step,
@@ -586,6 +622,368 @@ impl CombatAgent for IsmctsAgent {
             .unwrap();
         let step = &moves.iter().find(|(k, _)| k == best_key).unwrap().1;
         game.valid_steps().iter().position(|s| s == step).unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Full-run driver: plays an entire Act-1 climb. Combat decisions go to a
+// wrapped CombatAgent; every non-combat decision (Neow, map path, rewards,
+// chest, campfire, deck edits, shop, events) is handled by simple heuristics.
+// Steps are routed by their Debug type name and scored from public `Game`
+// state, so the whole layer stays fork-only with no upstream `Step` changes.
+// ---------------------------------------------------------------------------
+
+// Leading identifier of a step's Debug output, e.g. "AscendStep",
+// "CardRewardStep", "CampfireRestStep". Stable across field/variant values.
+fn step_name(s: &Box<dyn Step>) -> String {
+    let d = format!("{s:?}");
+    d.split([' ', '{', '(']).next().unwrap_or("").to_owned()
+}
+
+fn indices_of(steps: &[Box<dyn Step>], name: &str) -> Vec<usize> {
+    steps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| step_name(s) == name)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn first_of(steps: &[Box<dyn Step>], name: &str) -> Option<usize> {
+    steps.iter().position(|s| step_name(s) == name)
+}
+
+fn has_kind(steps: &[Box<dyn Step>], name: &str) -> bool {
+    steps.iter().any(|s| step_name(s) == name)
+}
+
+// Desirability of adding `class` to the deck (also reused as a keep score).
+fn card_value(class: CardClass) -> i32 {
+    use CardClass::*;
+    match class {
+        Strike | Defend => 1, // basics: we start with plenty, don't want more
+        Bash => 6,
+        Uppercut | Carnage | Hemokinesis => 7,
+        Clothesline | TwinStrike | PommelStrike | Cleave => 5,
+        Anger | IronWave | Headbutt | Clash | Thunderclap => 4,
+        Inflame => 8,
+        Armaments | ShrugItOff => 5,
+        TrueGrit | Purity => 3,
+        _ => match class.ty() {
+            CardType::Power => 7,
+            CardType::Attack => 5,
+            CardType::Skill => 4,
+            CardType::Status | CardType::Curse => -100,
+        },
+    }
+}
+
+// Higher = better to remove/transform out of the deck (curses, then basics).
+fn removal_value(class: CardClass) -> i32 {
+    let curse = if class.ty() == CardType::Curse {
+        1000
+    } else {
+        0
+    };
+    let basic = match class {
+        CardClass::Strike => 500,
+        CardClass::Defend => 400,
+        _ => 0,
+    };
+    curse + basic - card_value(class)
+}
+
+// Among `steps`, pick the one of kind `name` whose master-deck card maximizes
+// `score`. valid_steps emits one step per master-deck card passing `pred`, in
+// deck order, so the nth such step aligns with the nth matching deck card.
+fn master_pick(
+    game: &Game,
+    steps: &[Box<dyn Step>],
+    name: &str,
+    pred: impl Fn(&crate::card::CardRef) -> bool,
+    score: impl Fn(CardClass) -> i32,
+) -> usize {
+    let idxs = indices_of(steps, name);
+    if idxs.is_empty() {
+        return 0;
+    }
+    let mut best_ord = 0;
+    let mut best = i32::MIN;
+    let mut ord = 0;
+    for c in game.master_deck.iter() {
+        if pred(c) {
+            let s = score(c.borrow().class);
+            if s > best {
+                best = s;
+                best_ord = ord;
+            }
+            ord += 1;
+        }
+    }
+    *idxs.get(best_ord).unwrap_or(&idxs[0])
+}
+
+pub struct FullRunAgent<C: CombatAgent> {
+    combat: C,
+}
+
+impl<C: CombatAgent> FullRunAgent<C> {
+    pub fn new(combat: C) -> Self {
+        Self { combat }
+    }
+
+    fn hp_frac(game: &Game) -> f64 {
+        game.player.cur_hp as f64 / game.player.max_hp.max(1) as f64
+    }
+
+    // Destination room type of an AscendStep, parsed from "ascend to (x, y)".
+    fn ascend_room(game: &Game, s: &Box<dyn Step>) -> Option<RoomType> {
+        let d = s.description(game);
+        let inside = d.split('(').nth(1)?;
+        let inside = inside.trim_end_matches(')');
+        let mut it = inside.split(',');
+        let x: usize = it.next()?.trim().parse().ok()?;
+        let y: usize = it.next()?.trim().parse().ok()?;
+        game.map.nodes.get(x)?.get(y)?.ty
+    }
+
+    // Pick the next map node by room type, biased by HP and deck strength.
+    fn map_nav(&self, game: &Game, steps: &[Box<dyn Step>]) -> usize {
+        let hp = Self::hp_frac(game);
+        // Only fight elites once the deck can actually win them; a starter deck
+        // walking into Lagavulin/Gremlin Nob is a guaranteed death.
+        let deck_power: i32 = game
+            .master_deck
+            .iter()
+            .map(|c| card_value(c.borrow().class))
+            .sum();
+        let elite_ok = hp > 0.8 && deck_power >= 45;
+        let mut best = 0;
+        let mut best_score = i32::MIN;
+        for i in indices_of(steps, "AscendStep") {
+            let score = match Self::ascend_room(game, &steps[i]) {
+                Some(RoomType::Treasure) => 7,
+                Some(RoomType::Monster) => 5,
+                Some(RoomType::Shop) => 4,
+                Some(RoomType::Event) => 3,
+                Some(RoomType::Campfire) => {
+                    if hp < 0.6 {
+                        8
+                    } else {
+                        4
+                    }
+                }
+                Some(RoomType::Elite) => {
+                    if elite_ok {
+                        6
+                    } else {
+                        -10
+                    }
+                }
+                _ => 10, // boss / boss treasure: only option anyway
+            };
+            if score > best_score {
+                best_score = score;
+                best = i;
+            }
+        }
+        best
+    }
+
+    // Neow blessing: thin the deck if offered, else take lasting value.
+    fn blessing(&self, game: &Game, steps: &[Box<dyn Step>]) -> usize {
+        let mut best = 0;
+        let mut best_score = i32::MIN;
+        for i in indices_of(steps, "ChooseBlessingStep") {
+            let d = steps[i].description(game);
+            let score = if d.contains("RemoveOne") {
+                100
+            } else if d.contains("CommonRelic") {
+                80
+            } else if d.contains("GainMaxHPSmall") {
+                60
+            } else if d.contains("TransformOne") {
+                50
+            } else if d.contains("RandomUncommonColorless") {
+                45
+            } else if d.contains("RandomPotion") {
+                30
+            } else if d.contains("RemoveRelic") {
+                -100
+            } else {
+                0
+            };
+            if score > best_score {
+                best_score = score;
+                best = i;
+            }
+        }
+        best
+    }
+
+    // Take everything good (gold, relics, potions if room), then the best card
+    // in the pack if it clears the bar, else leave.
+    fn rewards(&self, game: &Game, steps: &[Box<dyn Step>]) -> usize {
+        if let Some(i) = first_of(steps, "GoldRewardStep") {
+            return i;
+        }
+        if let Some(i) = first_of(steps, "StolenGoldRewardStep") {
+            return i;
+        }
+        if let Some(i) = first_of(steps, "RelicRewardStep") {
+            return i;
+        }
+        if game.potions.iter().any(|p| p.is_none())
+            && let Some(i) = first_of(steps, "PotionRewardStep")
+        {
+            return i;
+        }
+        let card_idxs = indices_of(steps, "CardRewardStep");
+        if !card_idxs.is_empty() {
+            // CardRewardSteps are in (pack, card) row-major order, matching a
+            // flatten of rewards.cards.
+            let classes: Vec<CardClass> = game
+                .rewards
+                .cards
+                .iter()
+                .flatten()
+                .map(|c| c.borrow().class)
+                .collect();
+            let mut best_k = 0;
+            let mut best_v = i32::MIN;
+            for (k, c) in classes.iter().enumerate() {
+                if card_value(*c) > best_v {
+                    best_v = card_value(*c);
+                    best_k = k;
+                }
+            }
+            if best_v >= 4 && best_k < card_idxs.len() {
+                return card_idxs[best_k];
+            }
+        }
+        first_of(steps, "RewardExitStep").unwrap_or(0)
+    }
+
+    fn campfire(&self, game: &Game, steps: &[Box<dyn Step>]) -> usize {
+        if let Some(i) = first_of(steps, "CampfireDigStep") {
+            return i; // free relic
+        }
+        let rest = first_of(steps, "CampfireRestStep");
+        let upgrade = first_of(steps, "CampfireUpgradeStep");
+        match (rest, upgrade) {
+            (Some(r), Some(u)) => {
+                if Self::hp_frac(game) < 0.55 {
+                    r
+                } else {
+                    u
+                }
+            }
+            (Some(r), None) => r,
+            (None, Some(u)) => u,
+            (None, None) => 0,
+        }
+    }
+
+    // Events and anything unmodeled: prefer a safe exit, never burn a potion.
+    fn generic(&self, game: &Game, steps: &[Box<dyn Step>]) -> usize {
+        let is_potion = |s: &Box<dyn Step>| {
+            matches!(step_name(s).as_str(), "UsePotionStep" | "DiscardPotionStep")
+        };
+        for (i, s) in steps.iter().enumerate() {
+            if is_potion(s) {
+                continue;
+            }
+            let d = s.description(game).to_lowercase();
+            if ["leave", "ignore", "skip", "outrun", "refuse", "continue"]
+                .iter()
+                .any(|w| d.contains(w))
+            {
+                return i;
+            }
+        }
+        steps.iter().position(|s| !is_potion(s)).unwrap_or(0)
+    }
+}
+
+impl<C: CombatAgent> CombatAgent for FullRunAgent<C> {
+    fn act(&mut self, game: &Game) -> usize {
+        if game.in_combat != CombatType::None {
+            return self.combat.act(game);
+        }
+        let steps = game.valid_steps();
+        if steps.is_empty() {
+            return 0;
+        }
+        if has_kind(&steps, "AscendStep") {
+            return self.map_nav(game, &steps);
+        }
+        if has_kind(&steps, "ChooseBlessingStep") {
+            return self.blessing(game, &steps);
+        }
+        if [
+            "GoldRewardStep",
+            "StolenGoldRewardStep",
+            "RelicRewardStep",
+            "PotionRewardStep",
+            "CardRewardStep",
+            "RewardExitStep",
+            "SingingBowlStep",
+            "SapphireKeyStep",
+        ]
+        .iter()
+        .any(|k| has_kind(&steps, k))
+        {
+            return self.rewards(game, &steps);
+        }
+        if has_kind(&steps, "OpenChestStep") || has_kind(&steps, "SkipChestStep") {
+            return first_of(&steps, "OpenChestStep").unwrap_or(0);
+        }
+        if [
+            "CampfireRestStep",
+            "CampfireUpgradeStep",
+            "CampfireDigStep",
+            "CampfireLiftStep",
+            "CampfireTokeStep",
+        ]
+        .iter()
+        .any(|k| has_kind(&steps, k))
+        {
+            return self.campfire(game, &steps);
+        }
+        if has_kind(&steps, "ChooseRemoveFromMasterStep") {
+            return master_pick(
+                game,
+                &steps,
+                "ChooseRemoveFromMasterStep",
+                |c| c.borrow().can_remove_from_master_deck(),
+                removal_value,
+            );
+        }
+        if has_kind(&steps, "ChooseTransformMasterStep") {
+            return master_pick(
+                game,
+                &steps,
+                "ChooseTransformMasterStep",
+                |c| c.borrow().can_remove_from_master_deck(),
+                removal_value,
+            );
+        }
+        if has_kind(&steps, "ChooseUpgradeMasterStep") {
+            return master_pick(
+                game,
+                &steps,
+                "ChooseUpgradeMasterStep",
+                |c| c.borrow().can_upgrade(),
+                card_value,
+            );
+        }
+        if has_kind(&steps, "BossRewardChooseStep") {
+            return first_of(&steps, "BossRewardChooseStep").unwrap();
+        }
+        if has_kind(&steps, "ShopExitStep") {
+            return first_of(&steps, "ShopExitStep").unwrap();
+        }
+        self.generic(game, &steps)
     }
 }
 
@@ -791,6 +1189,256 @@ fn player_eval() {
             &scen,
             it,
         );
+    }
+}
+
+// Stops at the Act-1 boss reward (Act 2 monsters aren't implemented yet).
+enum RunResult {
+    Cleared { hp: i32, floor: i32 },
+    Died { floor: i32 },
+    Stalled,
+}
+
+fn play_full_run<A: CombatAgent>(game: &mut Game, agent: &mut A) -> RunResult {
+    let mut steps_taken = 0;
+    loop {
+        match game.status {
+            GameStatus::Defeat => return RunResult::Died { floor: game.floor },
+            GameStatus::Victory => {
+                return RunResult::Cleared {
+                    hp: game.player.cur_hp,
+                    floor: game.floor,
+                };
+            }
+            GameStatus::Combat => {
+                let steps = game.valid_steps();
+                if steps.is_empty() {
+                    return RunResult::Stalled;
+                }
+                // Act-1 boss is dead once its boss-treasure relic choice appears.
+                if has_kind(&steps, "BossRewardChooseStep")
+                    || has_kind(&steps, "BossRewardSkipStep")
+                {
+                    return RunResult::Cleared {
+                        hp: game.player.cur_hp,
+                        floor: game.floor,
+                    };
+                }
+                let i = agent.act(game).min(steps.len() - 1);
+                game.step(i);
+                steps_taken += 1;
+                if steps_taken > 100_000 {
+                    return RunResult::Stalled;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct RunStats {
+    cleared: u32,
+    hp_sum: i64,
+    floor_sum: i64,
+    deaths: u32,
+    death_floor_sum: i64,
+    stalls: u32,
+    errors: u32,
+    trials: u32,
+}
+
+impl RunStats {
+    fn add(&mut self, r: RunResult) {
+        self.trials += 1;
+        match r {
+            RunResult::Cleared { hp, floor } => {
+                self.cleared += 1;
+                self.hp_sum += hp as i64;
+                self.floor_sum += floor as i64;
+            }
+            RunResult::Died { floor } => {
+                self.deaths += 1;
+                self.death_floor_sum += floor as i64;
+            }
+            RunResult::Stalled => self.stalls += 1,
+        }
+    }
+    fn merge(&mut self, o: &RunStats) {
+        self.cleared += o.cleared;
+        self.hp_sum += o.hp_sum;
+        self.floor_sum += o.floor_sum;
+        self.deaths += o.deaths;
+        self.death_floor_sum += o.death_floor_sum;
+        self.stalls += o.stalls;
+        self.errors += o.errors;
+        self.trials += o.trials;
+    }
+}
+
+// One worker: `trials` independent Act-1 runs. Each builds its own Game, so the
+// non-Send Rc card graph never crosses a thread boundary.
+fn run_trials(iters: u32, trials: u32) -> RunStats {
+    use crate::game::GameBuilder;
+    use crate::relic::RelicClass;
+    let mut s = RunStats::default();
+    for _ in 0..trials {
+        // Isolate latent engine panics from rare card/monster combos so one bad
+        // seed doesn't abort the whole sweep; count it and move on.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut game = GameBuilder::default()
+                .ironclad_starting_deck()
+                .add_relic(RelicClass::BurningBlood)
+                .build();
+            if iters == 0 {
+                let mut a = FullRunAgent::new(GreedyAgent);
+                play_full_run(&mut game, &mut a)
+            } else {
+                let mut a = FullRunAgent::new(IsmctsAgent::new(iters));
+                play_full_run(&mut game, &mut a)
+            }
+        }));
+        match r {
+            Ok(res) => s.add(res),
+            Err(_) => {
+                s.errors += 1;
+                s.trials += 1;
+            }
+        }
+    }
+    s
+}
+
+fn eval_full_run(name: &str, iters: u32, trials: u32, threads: u32) {
+    let threads = threads.max(1);
+    let per = trials.div_ceil(threads);
+    let mut total = RunStats::default();
+    std::thread::scope(|scope| {
+        let mut handles = vec![];
+        let mut left = trials;
+        for _ in 0..threads {
+            let n = per.min(left);
+            left -= n;
+            if n > 0 {
+                handles.push(scope.spawn(move || run_trials(iters, n)));
+            }
+        }
+        for h in handles {
+            total.merge(&h.join().unwrap());
+        }
+    });
+    let t = total.trials;
+    let pct = 100.0 * total.cleared as f64 / t.max(1) as f64;
+    let div = |n: i64, d: u32| if d > 0 { n as f64 / d as f64 } else { 0.0 };
+    println!("\n=== FullRunAgent({name}) over {t} Act-1 runs ===");
+    println!("  cleared {}/{t} ({pct:.1}%)", total.cleared);
+    println!(
+        "  avg final hp on clear {:.1} (at floor {:.1})",
+        div(total.hp_sum, total.cleared),
+        div(total.floor_sum, total.cleared)
+    );
+    println!(
+        "  deaths {} (avg death floor {:.1}), stalls {}, errors {}",
+        total.deaths,
+        div(total.death_floor_sum, total.deaths),
+        total.stalls,
+        total.errors
+    );
+}
+
+#[test]
+#[ignore]
+fn full_run_eval() {
+    let trials: u32 = std::env::var("FULLRUN_TRIALS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    // Combat is ISMCTS when FULLRUN_ISMCTS_ITERS>0, else the cheap Greedy policy.
+    let iters: u32 = std::env::var("FULLRUN_ISMCTS_ITERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let threads: u32 = std::env::var("FULLRUN_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12);
+    // Caught per-trial panics are counted, not printed; keep stderr quiet.
+    std::panic::set_hook(Box::new(|_| {}));
+    let name = if iters == 0 {
+        "Greedy".to_owned()
+    } else {
+        format!("ISMCTS({iters})")
+    };
+    eval_full_run(&name, iters, trials, threads);
+}
+
+#[test]
+#[ignore]
+fn full_run_trace() {
+    use crate::game::GameBuilder;
+    use crate::relic::RelicClass;
+
+    let mut game = GameBuilder::default()
+        .ironclad_starting_deck()
+        .add_relic(RelicClass::BurningBlood)
+        .build();
+    let iters: u32 = std::env::var("FULLRUN_ISMCTS_ITERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let mut agent: Box<dyn CombatAgent> = if iters == 0 {
+        Box::new(FullRunAgent::new(GreedyAgent))
+    } else {
+        Box::new(FullRunAgent::new(IsmctsAgent::new(iters)))
+    };
+    let mut steps_taken = 0;
+    let mut prev_in_combat = false;
+    let mut hp_at_combat_start = game.player.cur_hp;
+    loop {
+        if matches!(game.status, GameStatus::Defeat) {
+            println!(
+                "DIED floor {} room {:?} hp 0/{} deck {}",
+                game.floor,
+                game.cur_room,
+                game.player.max_hp,
+                game.master_deck.len()
+            );
+            break;
+        }
+        let steps = game.valid_steps();
+        if steps.is_empty() || has_kind(&steps, "BossRewardChooseStep") {
+            println!("CLEARED floor {} hp {}", game.floor, game.player.cur_hp);
+            break;
+        }
+        let in_combat = game.in_combat != CombatType::None;
+        if in_combat && !prev_in_combat {
+            hp_at_combat_start = game.player.cur_hp;
+            let ms: Vec<String> = game
+                .monsters
+                .iter()
+                .map(|m| format!("{}({}hp)", m.behavior.name(), m.creature.cur_hp))
+                .collect();
+            println!(
+                "floor {:>2} COMBAT start hp {} deck {}: {}",
+                game.floor,
+                game.player.cur_hp,
+                game.master_deck.len(),
+                ms.join(", ")
+            );
+        }
+        if !in_combat && prev_in_combat {
+            println!(
+                "         COMBAT end   hp {} (lost {})",
+                game.player.cur_hp,
+                hp_at_combat_start - game.player.cur_hp
+            );
+        }
+        prev_in_combat = in_combat;
+        let i = agent.act(&game).min(steps.len() - 1);
+        game.step(i);
+        steps_taken += 1;
+        if steps_taken > 100_000 {
+            break;
+        }
     }
 }
 

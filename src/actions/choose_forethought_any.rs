@@ -23,10 +23,13 @@ impl std::fmt::Debug for ChooseForethoughtAnyAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ForethoughtAnyGameState;
 
 impl GameState for ForethoughtAnyGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         moves.push(ForethoughtAnyEndStep);

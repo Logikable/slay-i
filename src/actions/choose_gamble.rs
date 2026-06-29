@@ -23,10 +23,13 @@ impl std::fmt::Debug for ChooseGambleAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChooseGambleGameState;
 
 impl GameState for ChooseGambleGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         moves.push(GambleEndStep);

@@ -47,10 +47,13 @@ impl std::fmt::Debug for ExhumeAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChooseExhumeGameState;
 
 impl GameState for ChooseExhumeGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         for (i, c) in game.exhaust_pile.iter().enumerate() {

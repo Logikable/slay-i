@@ -16,6 +16,7 @@ enum Action {
     Rake,
 }
 
+#[derive(Clone)]
 pub struct BlueSlaver {
     action: Action,
     history: MoveHistory<Action>,
@@ -31,6 +32,9 @@ impl BlueSlaver {
 }
 
 impl MonsterBehavior for BlueSlaver {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "blue slaver"
     }

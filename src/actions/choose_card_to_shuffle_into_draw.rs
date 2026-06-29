@@ -29,12 +29,15 @@ impl std::fmt::Debug for ChooseCardToShuffleIntoDrawAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChooseCardToShuffleIntoDrawGameState {
     classes: Vec<CardClass>,
 }
 
 impl GameState for ChooseCardToShuffleIntoDrawGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, _: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         moves.push(ContinueStep);

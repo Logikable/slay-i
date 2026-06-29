@@ -26,10 +26,13 @@ impl std::fmt::Debug for ChooseCardInHandToExhaustAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChooseExhaustOneCardInHandGameState;
 
 impl GameState for ChooseExhaustOneCardInHandGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         for i in 0..game.hand.len() {

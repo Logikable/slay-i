@@ -5,6 +5,7 @@ use crate::{
     queue::ActionQueue,
 };
 
+#[derive(Clone)]
 pub struct SlimeSpikeS;
 
 impl SlimeSpikeS {
@@ -14,6 +15,9 @@ impl SlimeSpikeS {
 }
 
 impl MonsterBehavior for SlimeSpikeS {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "spike slime S"
     }

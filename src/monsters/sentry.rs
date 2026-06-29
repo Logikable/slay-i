@@ -12,6 +12,7 @@ enum Action {
     Debuff,
 }
 
+#[derive(Clone)]
 pub struct Sentry {
     action: Action,
 }
@@ -30,6 +31,9 @@ impl Sentry {
 }
 
 impl MonsterBehavior for Sentry {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "sentry"
     }

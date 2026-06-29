@@ -31,12 +31,15 @@ impl std::fmt::Debug for ChooseMemoriesAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChooseMemoriesGameState {
     num_cards_remaining: i32,
 }
 
 impl GameState for ChooseMemoriesGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(self.clone())
+    }
     fn valid_steps(&self, game: &Game) -> Option<Steps> {
         let mut moves = Steps::default();
         moves.push(ChooseMemoriesEndStep);

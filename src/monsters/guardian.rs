@@ -21,6 +21,7 @@ enum Action {
     TwinSlam,
 }
 
+#[derive(Clone)]
 pub struct Guardian {
     action: Action,
     mode_shift_amount: i32,
@@ -44,6 +45,9 @@ impl Guardian {
 }
 
 impl MonsterBehavior for Guardian {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "guardian"
     }

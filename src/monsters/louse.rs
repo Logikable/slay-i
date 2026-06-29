@@ -16,6 +16,7 @@ enum Action {
     Attack,
 }
 
+#[derive(Clone)]
 pub struct Louse {
     action: Action,
     damage: i32,
@@ -43,6 +44,9 @@ impl Louse {
 }
 
 impl MonsterBehavior for Louse {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         if self.is_red {
             "red louse"

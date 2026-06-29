@@ -11,6 +11,7 @@ enum Action {
     Attack,
 }
 
+#[derive(Clone)]
 pub struct GremlinWizard {
     current_charge: i32,
     action: Action,
@@ -26,6 +27,9 @@ impl GremlinWizard {
 }
 
 impl MonsterBehavior for GremlinWizard {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "gremlin wizard"
     }

@@ -20,6 +20,7 @@ enum Action {
     Frail,
 }
 
+#[derive(Clone)]
 pub struct SlimeSpikeM {
     action: Action,
     history: MoveHistory<Action>,
@@ -35,6 +36,9 @@ impl SlimeSpikeM {
 }
 
 impl MonsterBehavior for SlimeSpikeM {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "spike slime M"
     }

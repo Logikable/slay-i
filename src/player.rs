@@ -207,7 +207,23 @@ impl GreedyAgent {
                 return play(ci, t);
             }
         }
-        // 2) Cover incoming damage.
+        // 2) Play Strength/Powers early (they compound); skip vs Enrage and when
+        // this turn's hit could kill us (block first then).
+        if !enrage && need_block < game.player.cur_hp {
+            if let Some(&(ci, _, t)) = others.iter().find(|(_, cl, _)| cl.ty() == CardType::Power) {
+                return play(ci, t);
+            }
+        }
+        // Don't wake a sleeping enemy (e.g. Lagavulin) unless we can kill it now;
+        // we've already stacked Strength above, so just pass and keep setting up.
+        let target_asleep = matches!(
+            game.monsters[target].behavior.get_intent(),
+            Intent::Sleep
+        );
+        if target_asleep && !lethal {
+            return Box::new(EndTurnStep);
+        }
+        // 3) Cover incoming damage.
         if need_block > 0 {
             if let Some(&(ci, _, t)) = blocks.first() {
                 return play(ci, t);
@@ -391,7 +407,7 @@ fn scenarios() -> Vec<(&'static str, Box<dyn Fn() -> Game>)> {
         ("Cultist", Box::new(|| base().build_combat_with_monster(Cultist::new()))),
         ("FungiBeast", Box::new(|| base().build_combat_with_monster(FungiBeast::new()))),
         ("GremlinNob", Box::new(|| base().build_combat_with_monster(GremlinNob::new()))),
-        ("Lagavulin", Box::new(|| base().build_combat_with_monster(Lagavulin::new_event()))),
+        ("Lagavulin", Box::new(|| base().build_combat_with_monster(Lagavulin::new()))),
     ]
 }
 

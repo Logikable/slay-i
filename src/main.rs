@@ -18,6 +18,8 @@ mod master_deck;
 mod monster;
 mod monsters;
 mod move_history;
+#[cfg(test)]
+mod player;
 mod potion;
 mod queue;
 mod relic;

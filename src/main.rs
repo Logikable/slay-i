@@ -10,6 +10,8 @@ mod creature;
 mod draw_pile;
 mod event;
 mod events;
+#[cfg(test)]
+mod fuzz;
 mod game;
 mod map;
 mod master_deck;

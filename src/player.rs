@@ -1561,6 +1561,49 @@ fn eval_full_run(name: &str, iters: u32, trials: u32, threads: u32, base: u64) {
     println!("  fitness {:.4}", total.fitness());
 }
 
+// Reproduce the engine runaway/empty-range panics on the tuned policy, one seed
+// at a time (single-threaded) so the guard's eprintln names the seed + culprit.
+#[test]
+#[ignore]
+fn repro_engine_bug() {
+    use crate::game::GameBuilder;
+    use crate::relic::RelicClass;
+    let iters = env_u32("REPRO_ITERS", 10);
+    let n = env_u32("REPRO_TRIALS", 256) as u64;
+    let base = env_u32("REPRO_SEED", 1) as u64;
+    let w = Weights {
+        score_treasure: 4.98,
+        score_monster: 2.07,
+        score_shop: 6.54,
+        score_event: 4.83,
+        score_campfire_low: 6.95,
+        score_campfire_high: -2.51,
+        score_elite_ok: 11.74,
+        score_elite_bad: -89.29,
+        elite_hp: 1.0,
+        elite_deckpower: 29.3,
+        rest_hp: 0.688,
+        reward_take: 2.70,
+        shop_card: 7.52,
+    };
+    for i in 0..n {
+        let seed = base + i;
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut game = GameBuilder::default()
+                .seed(seed)
+                .ironclad_starting_deck()
+                .add_relic(RelicClass::BurningBlood)
+                .build();
+            let mut a = FullRunAgent::with_weights(IsmctsAgent::new(iters), w);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            play_full_run(&mut game, &mut a, deadline)
+        }));
+        if r.is_err() {
+            eprintln!(">>> PANIC at seed {seed}");
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn full_run_eval() {

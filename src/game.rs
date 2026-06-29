@@ -529,6 +529,11 @@ pub struct GameBuilder {
 }
 
 impl GameBuilder {
+    // Seed the run's RNG for reproducible builds/evals.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.rng = Rand::seed_from_u64(seed);
+        self
+    }
     pub fn ironclad_starting_deck(mut self) -> Self {
         for _ in 0..5 {
             self.master_deck.push((CardClass::Strike, false));

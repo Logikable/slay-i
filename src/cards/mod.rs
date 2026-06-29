@@ -41,7 +41,7 @@ pub enum CardColor {
 
 macro_rules! c {
     ($($name:ident => ($rarity:expr, $ty:expr, $color:expr, $cost:expr, $behavior:expr, $exhausts:expr)),+,) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
         pub enum CardClass {
             $(
                 $name,

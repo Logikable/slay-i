@@ -367,6 +367,229 @@ impl CombatAgent for RolloutAgent {
 }
 
 // ---------------------------------------------------------------------------
+// Information-Set MCTS (open-loop UCT)
+//
+// Flat rollout spends its budget uniformly across every legal step; UCT spends
+// it where it matters. We run N iterations: each samples a determinization
+// (fork + fresh seed), descends the tree by UCB1, expands one node, rolls out
+// to end of combat with Greedy, and backpropagates. Moves are keyed by a
+// determinization-stable `MoveKey` (card class + upgrade + target, not the
+// volatile hand index) so one tree is shared across all sampled worlds, the
+// way ISMCTS handles hidden draw order / monster rolls.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum MoveKey {
+    EndTurn,
+    Play {
+        class: CardClass,
+        upgraded: bool,
+        target: Option<usize>,
+    },
+}
+
+// Legal moves at the current decision as (stable key, concrete step), deduped
+// by key so interchangeable cards (e.g. two Strikes) collapse to one branch.
+fn legal_moves(game: &Game) -> Vec<(MoveKey, Box<dyn Step>)> {
+    let valid = game.valid_steps();
+    let present = |s: &Box<dyn Step>| valid.iter().any(|v| v == s);
+    let mut out: Vec<(MoveKey, Box<dyn Step>)> = vec![];
+    let mut seen: std::collections::HashSet<MoveKey> = Default::default();
+    let mut push = |out: &mut Vec<(MoveKey, Box<dyn Step>)>, k: MoveKey, s: Box<dyn Step>| {
+        if seen.insert(k.clone()) {
+            out.push((k, s));
+        }
+    };
+
+    let et: Box<dyn Step> = Box::new(EndTurnStep);
+    if present(&et) {
+        push(&mut out, MoveKey::EndTurn, et);
+    }
+    for (ci, c) in game.hand.iter().enumerate() {
+        let (class, upgraded, targeted) = {
+            let b = c.borrow();
+            (b.class, b.upgrade_count > 0, b.has_target())
+        };
+        let targets: Vec<Option<usize>> = if targeted {
+            (0..game.monsters.len())
+                .filter(|&mi| game.monsters[mi].creature.is_actionable())
+                .map(Some)
+                .collect()
+        } else {
+            vec![None]
+        };
+        for t in targets {
+            let step: Box<dyn Step> = Box::new(PlayCardStep {
+                hand_index: ci,
+                target: t,
+            });
+            if present(&step) {
+                push(
+                    &mut out,
+                    MoveKey::Play {
+                        class,
+                        upgraded,
+                        target: t,
+                    },
+                    step,
+                );
+            }
+        }
+    }
+    out
+}
+
+fn step_move(game: &mut Game, step: &Box<dyn Step>) {
+    let i = game
+        .valid_steps()
+        .iter()
+        .position(|s| s == step)
+        .expect("chosen move must be legal in this determinization");
+    game.step(i);
+}
+
+fn combat_over(game: &Game) -> bool {
+    matches!(game.status, GameStatus::Defeat) || game.in_combat == CombatType::None
+}
+
+// Normalized terminal value in [0, 1]. A win always scores >= 0.5 (more so the
+// more HP survives); a loss/stall scores by fraction of monster HP removed.
+fn value01(game: &Game) -> f64 {
+    let (mut cur, mut max) = (0i32, 0i32);
+    for m in &game.monsters {
+        cur += m.creature.cur_hp.max(0);
+        max += m.creature.max_hp;
+    }
+    let progress = if max == 0 {
+        1.0
+    } else {
+        1.0 - cur as f64 / max as f64
+    };
+    let won = !matches!(game.status, GameStatus::Defeat) && game.player.cur_hp > 0 && cur == 0;
+    if won {
+        0.5 + 0.5 * (game.player.cur_hp as f64 / game.player.max_hp.max(1) as f64)
+    } else {
+        0.45 * progress
+    }
+}
+
+#[derive(Default)]
+struct Edge {
+    visits: f64,
+    total: f64,
+    avail: f64,
+    child: Option<Box<MctsNode>>,
+}
+
+#[derive(Default)]
+struct MctsNode {
+    children: std::collections::HashMap<MoveKey, Edge>,
+}
+
+const UCB_C: f64 = 1.0;
+
+fn mcts_iterate(
+    node: &mut MctsNode,
+    game: &mut Game,
+    policy: &mut GreedyAgent,
+    rng: &mut Rand,
+) -> f64 {
+    if combat_over(game) {
+        return value01(game);
+    }
+    let moves = legal_moves(game);
+    if moves.is_empty() {
+        return value01(game);
+    }
+    for (k, _) in &moves {
+        node.children.entry(k.clone()).or_default().avail += 1.0;
+    }
+    let untried: Vec<usize> = moves
+        .iter()
+        .enumerate()
+        .filter(|(_, (k, _))| node.children[k].visits == 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    let chosen = if !untried.is_empty() {
+        untried[rng.random_range(0..untried.len())]
+    } else {
+        let mut best = 0;
+        let mut best_ucb = f64::MIN;
+        for (i, (k, _)) in moves.iter().enumerate() {
+            let e = &node.children[k];
+            let ucb = e.total / e.visits + UCB_C * (e.avail.ln() / e.visits).sqrt();
+            if ucb > best_ucb {
+                best_ucb = ucb;
+                best = i;
+            }
+        }
+        best
+    };
+    let (key, step) = &moves[chosen];
+    step_move(game, step);
+    let expand = node.children[key].visits == 0.0;
+    let value = if expand {
+        let _ = play_out(game, policy);
+        value01(game)
+    } else {
+        let child = node
+            .children
+            .get_mut(key)
+            .unwrap()
+            .child
+            .get_or_insert_with(|| Box::new(MctsNode::default()));
+        mcts_iterate(child, game, policy, rng)
+    };
+    let e = node.children.get_mut(key).unwrap();
+    e.visits += 1.0;
+    e.total += value;
+    value
+}
+
+pub struct IsmctsAgent {
+    iters: u32,
+    rng: Rand,
+}
+
+impl IsmctsAgent {
+    pub fn new(iters: u32) -> Self {
+        Self {
+            iters,
+            rng: Rand::default(),
+        }
+    }
+}
+
+impl CombatAgent for IsmctsAgent {
+    fn act(&mut self, game: &Game) -> usize {
+        let moves = legal_moves(game);
+        if moves.len() <= 1 {
+            return 0;
+        }
+        let mut root = MctsNode::default();
+        let mut policy = GreedyAgent;
+        for _ in 0..self.iters {
+            let mut sim = game.clone_for_search();
+            let seed: u64 = self.rng.random();
+            sim.rng = Rand::seed_from_u64(seed);
+            mcts_iterate(&mut root, &mut sim, &mut policy, &mut self.rng);
+        }
+        // Robust child: the most-visited root move.
+        let best_key = moves
+            .iter()
+            .map(|(k, _)| k)
+            .max_by(|a, b| {
+                let va = root.children.get(*a).map(|e| e.visits).unwrap_or(0.0);
+                let vb = root.children.get(*b).map(|e| e.visits).unwrap_or(0.0);
+                va.partial_cmp(&vb).unwrap()
+            })
+            .unwrap();
+        let step = &moves.iter().find(|(k, _)| k == best_key).unwrap().1;
+        game.valid_steps().iter().position(|s| s == step).unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Evaluation harness
 // ---------------------------------------------------------------------------
 
@@ -549,6 +772,24 @@ fn player_eval() {
             || RolloutAgent::new(rollouts),
             &scen,
             rt,
+        );
+    }
+
+    // ISMCTS, gated similarly:
+    // ISMCTS_TRIALS=200 ISMCTS_ITERS=600 cargo test --release player_eval ...
+    if let Some(it) = std::env::var("ISMCTS_TRIALS")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        let iters: u32 = std::env::var("ISMCTS_ITERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(600);
+        eval_agent(
+            &format!("IsmctsAgent({iters})"),
+            || IsmctsAgent::new(iters),
+            &scen,
+            it,
         );
     }
 }

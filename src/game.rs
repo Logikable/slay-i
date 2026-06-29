@@ -1431,7 +1431,11 @@ impl Game {
             potions: self.potions.clone(),
             gold: self.gold,
             draw_per_turn: self.draw_per_turn,
-            master_deck: clone_pile(&self.master_deck),
+            // Combat never mutates master-deck card contents (combat works on
+            // clones made at combat start), so a shallow Rc clone is safe here
+            // and avoids deep-cloning the whole deck on every fork. Valid only
+            // because forks are stepped no further than the end of combat.
+            master_deck: self.master_deck.clone(),
             next_id: self.next_id,
             force_monsters: self
                 .force_monsters

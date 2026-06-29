@@ -187,7 +187,12 @@ impl GreedyAgent {
 
         let tc = &game.monsters[target].creature;
         let lethal = self.attack_potential(game, target) >= tc.cur_hp + tc.block;
-        let need_block = self.incoming(game);
+        // Vs Enrage (Gremlin Nob), skills/powers buff the monster: never play
+        // non-attacks, just race it down.
+        let enrage = alive
+            .iter()
+            .any(|&i| game.monsters[i].creature.has_status(Status::Enrage));
+        let need_block = if enrage { 0 } else { self.incoming(game) };
 
         let play = |ci: usize, t: Option<usize>| -> Box<dyn Step> {
             Box::new(PlayCardStep { hand_index: ci, target: t })
@@ -214,12 +219,14 @@ impl GreedyAgent {
                 return play(ci, t);
             }
         }
-        // 4) Otherwise hit, then dump buffs/other.
+        // 4) Otherwise hit, then dump buffs/other (never buffs into Enrage).
         if let Some(&(ci, _, t)) = attacks.first() {
             return play(ci, t);
         }
-        if let Some(&(ci, _, t)) = others.first() {
-            return play(ci, t);
+        if !enrage {
+            if let Some(&(ci, _, t)) = others.first() {
+                return play(ci, t);
+            }
         }
         Box::new(EndTurnStep)
     }
@@ -366,8 +373,18 @@ fn scenarios() -> Vec<(&'static str, Box<dyn Fn() -> Game>)> {
         cultist::Cultist, fungi_beast::FungiBeast, gremlin_nob::GremlinNob, jawworm::JawWorm,
         lagavulin::Lagavulin,
     };
+    // A representative mid-Act-1 Ironclad deck so elites are actually winnable
+    // and we measure agent skill rather than deck impossibility.
     fn base() -> GameBuilder {
-        GameBuilder::default().ironclad_starting_deck()
+        GameBuilder::default()
+            .ironclad_starting_deck()
+            .add_card(CardClass::Strike)
+            .add_card(CardClass::Strike)
+            .add_card(CardClass::TwinStrike)
+            .add_card(CardClass::PommelStrike)
+            .add_card(CardClass::Anger)
+            .add_card(CardClass::ShrugItOff)
+            .add_card(CardClass::Inflame)
     }
     vec![
         ("JawWorm", Box::new(|| base().build_combat_with_monster(JawWorm::new()))),

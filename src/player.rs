@@ -1445,6 +1445,9 @@ struct RunStats {
     // Smooth optimization signal: a clear scores >1 (more with surviving HP), a
     // death scores by how far it got. Gives CMA-ES gradient even below a clear.
     fitness_sum: f64,
+    // Deaths bucketed by floor (index = floor, clamped to 0..18) to see whether
+    // runs die at the boss (~floor 16) or to mid-act attrition.
+    death_floor_hist: [u32; 18],
 }
 
 impl RunStats {
@@ -1462,6 +1465,7 @@ impl RunStats {
             RunResult::Died { floor } => {
                 self.deaths += 1;
                 self.death_floor_sum += floor as i64;
+                self.death_floor_hist[(floor as usize).min(17)] += 1;
                 // Depth is only a weak tiebreaker among non-clears.
                 self.fitness_sum += 0.2 * (floor as f64 / 17.0);
             }
@@ -1478,6 +1482,9 @@ impl RunStats {
         self.errors += o.errors;
         self.trials += o.trials;
         self.fitness_sum += o.fitness_sum;
+        for i in 0..18 {
+            self.death_floor_hist[i] += o.death_floor_hist[i];
+        }
     }
     fn fitness(&self) -> f64 {
         self.fitness_sum / self.trials.max(1) as f64
@@ -1579,6 +1586,13 @@ fn eval_full_run(name: &str, iters: u32, trials: u32, threads: u32, base: u64) {
         total.errors
     );
     println!("  fitness {:.4}", total.fitness());
+    print!("  death floors:");
+    for (f, n) in total.death_floor_hist.iter().enumerate() {
+        if *n > 0 {
+            print!(" {f}:{n}");
+        }
+    }
+    println!();
 }
 
 // Reproduce the engine runaway/empty-range panics on the tuned policy, one seed

@@ -739,13 +739,79 @@ fn master_pick(
     *idxs.get(best_ord).unwrap_or(&idxs[0])
 }
 
+// Tunable non-combat policy knobs (CMA-ES target). Combat is ISMCTS, untouched.
+const NPARAM: usize = 13;
+
+#[derive(Clone, Copy)]
+pub struct Weights {
+    score_treasure: f64,
+    score_monster: f64,
+    score_shop: f64,
+    score_event: f64,
+    score_campfire_low: f64,
+    score_campfire_high: f64,
+    score_elite_ok: f64,
+    score_elite_bad: f64,
+    elite_hp: f64,
+    elite_deckpower: f64,
+    rest_hp: f64,
+    reward_take: f64,
+    shop_card: f64,
+}
+
+// Hand-tuned defaults (the current policy) and the CMA-ES search scale per
+// param: value = base + range * x, so the optimizer works in a normalized space.
+const WEIGHT_BASE: [f64; NPARAM] =
+    [7., 5., 4., 3., 8., 4., 6., -50., 0.8, 45., 0.55, 4., 6.];
+const WEIGHT_RANGE: [f64; NPARAM] =
+    [6., 6., 6., 6., 6., 6., 8., 40., 0.3, 40., 0.4, 5., 5.];
+
+impl Default for Weights {
+    fn default() -> Self {
+        Weights::from_x(&[0.0; NPARAM])
+    }
+}
+
+impl Weights {
+    fn from_x(x: &[f64]) -> Self {
+        let p: Vec<f64> = (0..NPARAM)
+            .map(|i| WEIGHT_BASE[i] + WEIGHT_RANGE[i] * x[i])
+            .collect();
+        // Clamp to sane ranges so the optimizer can't wander into pathologically
+        // slow regions (e.g. reward_take so low it takes every junk card -> 40+
+        // card decks -> runs grind for thousands of steps).
+        Weights {
+            score_treasure: p[0].clamp(-20.0, 30.0),
+            score_monster: p[1].clamp(-20.0, 30.0),
+            score_shop: p[2].clamp(-20.0, 30.0),
+            score_event: p[3].clamp(-20.0, 30.0),
+            score_campfire_low: p[4].clamp(-20.0, 30.0),
+            score_campfire_high: p[5].clamp(-20.0, 30.0),
+            score_elite_ok: p[6].clamp(-20.0, 30.0),
+            score_elite_bad: p[7].clamp(-100.0, 10.0),
+            elite_hp: p[8].clamp(0.0, 1.0),
+            elite_deckpower: p[9].clamp(10.0, 150.0),
+            rest_hp: p[10].clamp(0.0, 1.0),
+            reward_take: p[11].clamp(2.0, 10.0),
+            shop_card: p[12].clamp(2.0, 12.0),
+        }
+    }
+}
+
 pub struct FullRunAgent<C: CombatAgent> {
     combat: C,
+    w: Weights,
 }
 
 impl<C: CombatAgent> FullRunAgent<C> {
     pub fn new(combat: C) -> Self {
-        Self { combat }
+        Self {
+            combat,
+            w: Weights::default(),
+        }
+    }
+    pub fn with_weights(combat: C, w: Weights) -> Self {
+        Self { combat, w }
     }
 
     fn hp_frac(game: &Game) -> f64 {
@@ -780,30 +846,31 @@ impl<C: CombatAgent> FullRunAgent<C> {
             .iter()
             .map(|c| card_value(c.borrow().class))
             .sum();
-        let elite_ok = hp > 0.8 && deck_power >= 45;
+        let w = self.w;
+        let elite_ok = hp > w.elite_hp && deck_power as f64 >= w.elite_deckpower;
         let room_score = |room: Option<RoomType>| match room {
-            Some(RoomType::Treasure) => 7,
-            Some(RoomType::Monster) => 5,
-            Some(RoomType::Shop) => 4,
-            Some(RoomType::Event) => 3,
+            Some(RoomType::Treasure) => w.score_treasure,
+            Some(RoomType::Monster) => w.score_monster,
+            Some(RoomType::Shop) => w.score_shop,
+            Some(RoomType::Event) => w.score_event,
             Some(RoomType::Campfire) => {
                 if hp < 0.6 {
-                    8
+                    w.score_campfire_low
                 } else {
-                    4
+                    w.score_campfire_high
                 }
             }
             Some(RoomType::Elite) => {
                 if elite_ok {
-                    6
+                    w.score_elite_ok
                 } else {
-                    -50
+                    w.score_elite_bad
                 }
             }
-            _ => 0, // boss / boss treasure: forced, doesn't affect choice
+            _ => 0.0, // boss / boss treasure: forced, doesn't affect choice
         };
         // best[x][y] = room_score(node) + best child path to the boss.
-        let mut best = vec![[i32::MIN; MAP_HEIGHT]; MAP_WIDTH];
+        let mut best = vec![[f64::NEG_INFINITY; MAP_HEIGHT]; MAP_WIDTH];
         for y in (0..MAP_HEIGHT).rev() {
             for x in 0..MAP_WIDTH {
                 let node = &game.map.nodes[x][y];
@@ -814,17 +881,17 @@ impl<C: CombatAgent> FullRunAgent<C> {
                     node.edges
                         .iter()
                         .map(|&c| best[c][y + 1])
-                        .filter(|&v| v != i32::MIN)
-                        .max()
-                        .unwrap_or(0)
+                        .filter(|v| v.is_finite())
+                        .fold(f64::NEG_INFINITY, f64::max)
                 } else {
-                    0
+                    f64::NEG_INFINITY
                 };
+                let child = if child.is_finite() { child } else { 0.0 };
                 best[x][y] = room_score(node.ty) + child;
             }
         }
         let mut chosen = 0;
-        let mut chosen_score = i32::MIN;
+        let mut chosen_score = f64::NEG_INFINITY;
         for i in indices_of(steps, "AscendStep") {
             if let Some((x, y)) = Self::ascend_xy(game, &steps[i])
                 && best[x][y] > chosen_score
@@ -903,7 +970,7 @@ impl<C: CombatAgent> FullRunAgent<C> {
                     best_k = k;
                 }
             }
-            if best_v >= 4 && best_k < card_idxs.len() {
+            if best_v as f64 >= self.w.reward_take && best_k < card_idxs.len() {
                 return card_idxs[best_k];
             }
         }
@@ -918,7 +985,7 @@ impl<C: CombatAgent> FullRunAgent<C> {
         let upgrade = first_of(steps, "CampfireUpgradeStep");
         match (rest, upgrade) {
             (Some(r), Some(u)) => {
-                if Self::hp_frac(game) < 0.55 {
+                if Self::hp_frac(game) < self.w.rest_hp {
                     r
                 } else {
                     u
@@ -966,7 +1033,7 @@ impl<C: CombatAgent> FullRunAgent<C> {
         // 3) Best affordable card, if genuinely strong (gold is scarcer than
         // free reward picks, so demand a higher bar).
         let mut best_card: Option<usize> = None;
-        let mut best_v = 5;
+        let mut best_v = i32::MIN;
         let mut ord = 0;
         for (class, p) in game.shop.cards.iter() {
             if gold >= *p {
@@ -977,7 +1044,8 @@ impl<C: CombatAgent> FullRunAgent<C> {
                 ord += 1;
             }
         }
-        if let Some(o) = best_card
+        if best_v as f64 >= self.w.shop_card
+            && let Some(o) = best_card
             && let Some(&i) = indices_of(steps, "ShopBuyCardStep").get(o)
         {
             return i;
@@ -1306,7 +1374,11 @@ enum RunResult {
     Stalled,
 }
 
-fn play_full_run<A: CombatAgent>(game: &mut Game, agent: &mut A) -> RunResult {
+fn play_full_run<A: CombatAgent>(
+    game: &mut Game,
+    agent: &mut A,
+    deadline: std::time::Instant,
+) -> RunResult {
     let mut steps_taken = 0;
     loop {
         match game.status {
@@ -1334,10 +1406,12 @@ fn play_full_run<A: CombatAgent>(game: &mut Game, agent: &mut A) -> RunResult {
                 let i = agent.act(game).min(steps.len() - 1);
                 game.step(i);
                 steps_taken += 1;
-                // A legit Act-1 climb is well under ~1500 steps; cap low so a
-                // pathological seed is abandoned fast instead of running 100k
-                // expensive ISMCTS decisions and dominating the sweep.
-                if steps_taken > 4000 {
+                // Bound a run by step count AND wall-clock: a step-count cap
+                // doesn't bound per-step cost, and a bloated-deck policy makes
+                // individual ISMCTS decisions brutally expensive. A run that
+                // blows the time budget is Stalled (low fitness), which also
+                // steers CMA away from degenerate slow policies.
+                if steps_taken > 1800 || std::time::Instant::now() >= deadline {
                     return RunResult::Stalled;
                 }
             }
@@ -1355,6 +1429,9 @@ struct RunStats {
     stalls: u32,
     errors: u32,
     trials: u32,
+    // Smooth optimization signal: a clear scores >1 (more with surviving HP), a
+    // death scores by how far it got. Gives CMA-ES gradient even below a clear.
+    fitness_sum: f64,
 }
 
 impl RunStats {
@@ -1365,10 +1442,15 @@ impl RunStats {
                 self.cleared += 1;
                 self.hp_sum += hp as i64;
                 self.floor_sum += floor as i64;
+                // A clear dwarfs any death so the optimizer can't trade clears
+                // for deeper deaths; hp is a small bonus among clears.
+                self.fitness_sum += 3.0 + 0.5 * (hp as f64 / 80.0);
             }
             RunResult::Died { floor } => {
                 self.deaths += 1;
                 self.death_floor_sum += floor as i64;
+                // Depth is only a weak tiebreaker among non-clears.
+                self.fitness_sum += 0.2 * (floor as f64 / 17.0);
             }
             RunResult::Stalled => self.stalls += 1,
         }
@@ -1382,6 +1464,10 @@ impl RunStats {
         self.stalls += o.stalls;
         self.errors += o.errors;
         self.trials += o.trials;
+        self.fitness_sum += o.fitness_sum;
+    }
+    fn fitness(&self) -> f64 {
+        self.fitness_sum / self.trials.max(1) as f64
     }
 }
 
@@ -1393,6 +1479,7 @@ fn run_worker(
     iters: u32,
     base: u64,
     trials: u32,
+    w: Weights,
     counter: &std::sync::atomic::AtomicU32,
 ) -> RunStats {
     use crate::game::GameBuilder;
@@ -1407,6 +1494,9 @@ fn run_worker(
         let seed = base.wrapping_add(i as u64);
         // Isolate latent engine panics from rare card/monster combos so one bad
         // seed doesn't abort the whole sweep; count it and move on.
+        // Wall-clock budget per run: legit clears finish in well under a second,
+        // so 1.5s only ever aborts a degenerate (bloated-deck) policy's runs.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut game = GameBuilder::default()
                 .seed(seed)
@@ -1414,11 +1504,11 @@ fn run_worker(
                 .add_relic(RelicClass::BurningBlood)
                 .build();
             if iters == 0 {
-                let mut a = FullRunAgent::new(GreedyAgent);
-                play_full_run(&mut game, &mut a)
+                let mut a = FullRunAgent::with_weights(GreedyAgent, w);
+                play_full_run(&mut game, &mut a, deadline)
             } else {
-                let mut a = FullRunAgent::new(IsmctsAgent::new(iters));
-                play_full_run(&mut game, &mut a)
+                let mut a = FullRunAgent::with_weights(IsmctsAgent::new(iters), w);
+                play_full_run(&mut game, &mut a, deadline)
             }
         }));
         match r {
@@ -1432,18 +1522,25 @@ fn run_worker(
     s
 }
 
-fn eval_full_run(name: &str, iters: u32, trials: u32, threads: u32, base: u64) {
+// Run `trials` seeded climbs in parallel with policy weights `w`; returns the
+// aggregate. The CMA-ES loop calls this directly as its fitness function.
+fn run_eval(iters: u32, trials: u32, threads: u32, base: u64, w: Weights) -> RunStats {
     let threads = threads.max(1);
     let counter = std::sync::atomic::AtomicU32::new(0);
     let mut total = RunStats::default();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
-            .map(|_| scope.spawn(|| run_worker(iters, base, trials, &counter)))
+            .map(|_| scope.spawn(|| run_worker(iters, base, trials, w, &counter)))
             .collect();
         for h in handles {
             total.merge(&h.join().unwrap());
         }
     });
+    total
+}
+
+fn eval_full_run(name: &str, iters: u32, trials: u32, threads: u32, base: u64) {
+    let total = run_eval(iters, trials, threads, base, Weights::default());
     let t = total.trials;
     let pct = 100.0 * total.cleared as f64 / t.max(1) as f64;
     let div = |n: i64, d: u32| if d > 0 { n as f64 / d as f64 } else { 0.0 };
@@ -1461,6 +1558,7 @@ fn eval_full_run(name: &str, iters: u32, trials: u32, threads: u32, base: u64) {
         total.stalls,
         total.errors
     );
+    println!("  fitness {:.4}", total.fitness());
 }
 
 #[test]
@@ -1493,6 +1591,161 @@ fn full_run_eval() {
         format!("ISMCTS({iters})")
     };
     eval_full_run(&name, iters, trials, threads, base);
+}
+
+fn print_weights(w: &Weights) {
+    println!(
+        "  weights: treasure={:.2} monster={:.2} shop={:.2} event={:.2} camp_lo={:.2} \
+camp_hi={:.2} elite_ok={:.2} elite_bad={:.2} elite_hp={:.3} elite_dp={:.1} rest_hp={:.3} \
+reward_take={:.2} shop_card={:.2}",
+        w.score_treasure,
+        w.score_monster,
+        w.score_shop,
+        w.score_event,
+        w.score_campfire_low,
+        w.score_campfire_high,
+        w.score_elite_ok,
+        w.score_elite_bad,
+        w.elite_hp,
+        w.elite_deckpower,
+        w.rest_hp,
+        w.reward_take,
+        w.shop_card,
+    );
+}
+
+fn gauss(rng: &mut Rand) -> f64 {
+    // Box-Muller
+    let u1: f64 = rng.random::<f64>().max(1e-12);
+    let u2: f64 = rng.random::<f64>();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+// Separable CMA-ES (diagonal covariance, no eigendecomposition): tunes the
+// non-combat policy weights to maximize full-run fitness. Fitness uses a FIXED
+// seed set, so the objective is deterministic (noiseless) for clean convergence;
+// the best is validated on held-out seeds to catch overfitting.
+//   CMA_GENS=40 CMA_TRIALS=96 CMA_ITERS=50 cargo test --release cma_tune -- --ignored --nocapture
+#[test]
+#[ignore]
+fn cma_tune() {
+    let trials: u32 = env_u32("CMA_TRIALS", 96);
+    let iters: u32 = env_u32("CMA_ITERS", 50);
+    let threads: u32 = env_u32("CMA_THREADS", 16);
+    let gens: u32 = env_u32("CMA_GENS", 40);
+    let base: u64 = env_u32("CMA_SEED", 1) as u64;
+
+    let n = NPARAM;
+    let nf = n as f64;
+    let lambda = env_u32("CMA_LAMBDA", 4 + (3.0 * nf.ln()) as u32) as usize;
+    let mu = lambda / 2;
+    let mut wr: Vec<f64> = (0..mu)
+        .map(|i| (mu as f64 + 0.5).ln() - ((i + 1) as f64).ln())
+        .collect();
+    let wsum: f64 = wr.iter().sum();
+    for x in wr.iter_mut() {
+        *x /= wsum;
+    }
+    let mu_eff = 1.0 / wr.iter().map(|x| x * x).sum::<f64>();
+
+    let c_s = (mu_eff + 2.0) / (nf + mu_eff + 5.0);
+    let d_s = 1.0 + 2.0 * (((mu_eff - 1.0) / (nf + 1.0)).sqrt() - 1.0).max(0.0) + c_s;
+    let c_c = (4.0 + mu_eff / nf) / (nf + 4.0 + 2.0 * mu_eff / nf);
+    let mut c1 = 2.0 / ((nf + 1.3).powi(2) + mu_eff);
+    let mut cmu = (2.0 * (mu_eff - 2.0 + 1.0 / mu_eff) / ((nf + 2.0).powi(2) + mu_eff)).min(1.0 - c1);
+    let sep = (nf + 2.0) / 3.0; // separable speedup on the diagonal learning rates
+    c1 = (c1 * sep).min(1.0);
+    cmu = (cmu * sep).min(1.0 - c1);
+    let chi_n = nf.sqrt() * (1.0 - 1.0 / (4.0 * nf) + 1.0 / (21.0 * nf * nf));
+
+    let mut mean: Vec<f64> = vec![0.0; n]; // x=0 == hand-tuned defaults
+    let mut sigma = 0.4_f64;
+    let mut cdiag: Vec<f64> = vec![1.0; n];
+    let mut p_s: Vec<f64> = vec![0.0; n];
+    let mut p_c: Vec<f64> = vec![0.0; n];
+    let mut rng = Rand::seed_from_u64(0xC3A);
+
+    let base_fit = run_eval(iters, trials, threads, base, Weights::default()).fitness();
+    println!(
+        "CMA-ES n={n} lambda={lambda} mu={mu} trials={trials} iters={iters} gens={gens}; \
+baseline fitness {base_fit:.4}"
+    );
+
+    let mut best_x = mean.clone();
+    let mut best_fit = base_fit;
+    for g in 0..gens {
+        let mut pop: Vec<(f64, Vec<f64>)> = Vec::with_capacity(lambda);
+        for _ in 0..lambda {
+            let z: Vec<f64> = (0..n).map(|_| gauss(&mut rng)).collect();
+            let x: Vec<f64> = (0..n)
+                .map(|i| mean[i] + sigma * cdiag[i].sqrt() * z[i])
+                .collect();
+            let fit = run_eval(iters, trials, threads, base, Weights::from_x(&x)).fitness();
+            pop.push((fit, x));
+        }
+        pop.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        if pop[0].0 > best_fit {
+            best_fit = pop[0].0;
+            best_x = pop[0].1.clone();
+        }
+        let old_mean = mean.clone();
+        for i in 0..n {
+            mean[i] = (0..mu).map(|k| wr[k] * pop[k].1[i]).sum();
+        }
+        let cs_factor = (c_s * (2.0 - c_s) * mu_eff).sqrt();
+        for i in 0..n {
+            let zmean = (mean[i] - old_mean[i]) / (sigma * cdiag[i].sqrt());
+            p_s[i] = (1.0 - c_s) * p_s[i] + cs_factor * zmean;
+        }
+        let ps_norm = p_s.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let denom = (1.0 - (1.0 - c_s).powi(2 * (g as i32 + 1))).sqrt();
+        let h_sigma = if ps_norm / denom < (1.4 + 2.0 / (nf + 1.0)) * chi_n {
+            1.0
+        } else {
+            0.0
+        };
+        let cc_factor = (c_c * (2.0 - c_c) * mu_eff).sqrt();
+        for i in 0..n {
+            p_c[i] = (1.0 - c_c) * p_c[i] + h_sigma * cc_factor * (mean[i] - old_mean[i]) / sigma;
+            let rank_mu: f64 = (0..mu)
+                .map(|k| {
+                    let yi = (pop[k].1[i] - old_mean[i]) / sigma;
+                    wr[k] * yi * yi
+                })
+                .sum();
+            let dh = (1.0 - h_sigma) * c_c * (2.0 - c_c) * cdiag[i];
+            cdiag[i] = (1.0 - c1 - cmu) * cdiag[i] + c1 * (p_c[i] * p_c[i] + dh) + cmu * rank_mu;
+            cdiag[i] = cdiag[i].max(1e-12);
+        }
+        sigma *= ((c_s / d_s) * (ps_norm / chi_n - 1.0)).exp();
+        println!(
+            "gen {g:>2}: gen-best {:.4} all-best {:.4} sigma {:.3}",
+            pop[0].0, best_fit, sigma
+        );
+    }
+
+    let bw = Weights::from_x(&best_x);
+    println!("\nBEST fitness {best_fit:.4} (baseline {base_fit:.4})");
+    print_weights(&bw);
+    // Validate on held-out seeds the optimizer never saw.
+    let val = run_eval(iters, trials * 2, threads, base + 1_000_000, bw);
+    let val0 = run_eval(iters, trials * 2, threads, base + 1_000_000, Weights::default());
+    println!(
+        "VALIDATION (held-out seeds): tuned cleared {}/{} fitness {:.4} | default cleared {}/{} fitness {:.4}",
+        val.cleared,
+        val.trials,
+        val.fitness(),
+        val0.cleared,
+        val0.trials,
+        val0.fitness(),
+    );
+}
+
+fn env_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 #[test]

@@ -1,1 +1,12 @@
 /target
+
+# Dev-only artifacts (never upstream these)
+/models/
+/data/
+/runs/
+*.safetensors
+*.pt
+*.onnx
+*.ckpt
+*.npz
+*.log

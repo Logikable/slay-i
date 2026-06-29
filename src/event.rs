@@ -40,6 +40,21 @@ impl GameState for RollEventGameState {
                 events = game.event_act_pool.clone();
             }
             events.retain(|e| e.can_spawn(game));
+            // A long climb can exhaust the chosen pool (each seen event is
+            // removed from every pool below), leaving nothing to sample. Fall
+            // back to whatever spawnable events remain across all pools so the
+            // room still resolves instead of panicking on an empty range.
+            if events.is_empty() {
+                events = game.event_act_pool.clone();
+                events.extend(game.event_shrine_pool.iter().copied());
+                events.extend(game.event_one_time_pool.iter().copied());
+                events.retain(|e| e.can_spawn(game));
+            }
+            // No spawnable event anywhere (pathological): resolve as an empty
+            // room rather than crash.
+            if events.is_empty() {
+                return;
+            }
             let e = remove_random(&mut game.rng, &mut events);
             game.event_act_pool.retain(|&e2| e2 != e);
             game.event_one_time_pool.retain(|&e2| e2 != e);

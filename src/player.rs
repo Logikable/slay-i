@@ -1785,6 +1785,14 @@ baseline fitness {base_fit:.4}"
             "gen {g:>2}: gen-best {:.4} all-best {:.4} sigma {:.3}",
             pop[0].0, best_fit, sigma
         );
+        // Checkpoint the best-so-far x each gen: a long run killed mid-way (these
+        // 25-min runs get cut at session boundaries) is still recoverable — feed
+        // the last CKPT vector to Weights::from_x.
+        print!("CKPT g{g}:");
+        for v in &best_x {
+            print!(" {v:.5}");
+        }
+        println!();
     }
 
     let bw = Weights::from_x(&best_x);

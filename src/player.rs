@@ -443,10 +443,15 @@ fn legal_moves(game: &Game) -> Vec<(MoveKey, Box<dyn Step>)> {
             }
         }
     }
-    // Potions: try every (potion, target) and keep whatever is actually legal,
-    // so ISMCTS can spend an emergency potion instead of hoarding it.
+    // Hold potions for the boss. ISMCTS plans only within the current combat, so
+    // if offered a potion in a hallway fight it tends to spend it and arrive at
+    // the boss empty — yet the boss is the wall (only ~30% of boss fights won).
+    // Offer potions only at the boss, or as an emergency (about to die) so a
+    // potion can still save the run.
+    let hp_frac = game.player.cur_hp as f64 / game.player.max_hp.max(1) as f64;
+    let allow_potions = game.in_combat == CombatType::Boss || hp_frac < 0.34;
     for (pi, p) in game.potions.iter().enumerate() {
-        if p.is_none() {
+        if p.is_none() || !allow_potions {
             continue;
         }
         let mut targets: Vec<Option<usize>> = vec![None];

@@ -759,10 +759,14 @@ pub struct Weights {
     shop_card: f64,
 }
 
-// Hand-tuned defaults (the current policy) and the CMA-ES search scale per
-// param: value = base + range * x, so the optimizer works in a normalized space.
-const WEIGHT_BASE: [f64; NPARAM] =
-    [7., 5., 4., 3., 8., 4., 6., -50., 0.8, 45., 0.55, 4., 6.];
+// Policy defaults and the CMA-ES search scale per param: value = base +
+// range * x, so the optimizer works in a normalized space. The base is the
+// CMA-tuned optimum from the first run (held-out 11.7% clear vs 8.6% for the
+// original hand-tuned values); re-running CMA now searches around it.
+const WEIGHT_BASE: [f64; NPARAM] = [
+    4.98, 2.07, 6.54, 4.83, 6.95, -2.51, 11.74, -89.29, 1.0, 29.3, 0.688, 2.70,
+    7.52,
+];
 const WEIGHT_RANGE: [f64; NPARAM] =
     [6., 6., 6., 6., 6., 6., 8., 40., 0.3, 40., 0.4, 5., 5.];
 

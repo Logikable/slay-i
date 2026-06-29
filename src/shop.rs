@@ -25,7 +25,7 @@ fn break_maw_bank(game: &mut Game) {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Shop {
     pub cards: Vec<(CardClass, i32)>,
     pub relics: Vec<(RelicClass, i32)>,

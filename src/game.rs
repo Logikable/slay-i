@@ -49,7 +49,7 @@ use crate::state::{GameState, GameStateManager, Steps};
 use crate::status::Status;
 use crate::step::Step;
 
-pub type Rand = rand::rngs::ThreadRng;
+pub use crate::rng::Rand;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct CreatureRef(usize);
@@ -503,7 +503,7 @@ impl Step for DiscardPotionStep {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GameStatus {
     Defeat,
     Victory,
@@ -1402,6 +1402,86 @@ impl Game {
         assert!(self.action_queue.is_empty());
         assert!(self.card_queue.is_empty());
         assert!(self.monster_turn_queue_active.is_empty());
+    }
+
+    // Forks the game so a search agent can play moves forward without touching
+    // the real game. Only valid at a decision point (the action/card/monster
+    // queues must be drained). Every owned card `Rc` is deep-cloned so mutating
+    // the fork (costs, upgrades, piles) never aliases back into the original.
+    pub fn clone_for_search(&self) -> Game {
+        self.assert_no_actions();
+        let clone_card = |c: &CardRef| Rc::new(RefCell::new(c.borrow().clone()));
+        let clone_pile = |p: &CardPile| -> CardPile { p.iter().map(&clone_card).collect() };
+        Game {
+            rng: self.rng.clone(),
+            action_queue: ActionQueue::default(),
+            state: self.state.clone_for_search(),
+            status: self.status.clone(),
+            is_running: self.is_running,
+            map: self.map.clone(),
+            cur_room: self.cur_room,
+            cur_event: self.cur_event,
+            floor: self.floor,
+            map_position: self.map_position,
+            player: self.player.clone(),
+            has_ruby_key: self.has_ruby_key,
+            has_emerald_key: self.has_emerald_key,
+            has_sapphire_key: self.has_sapphire_key,
+            relics: self.relics.clone(),
+            potions: self.potions.clone(),
+            gold: self.gold,
+            draw_per_turn: self.draw_per_turn,
+            master_deck: clone_pile(&self.master_deck),
+            next_id: self.next_id,
+            force_monsters: self
+                .force_monsters
+                .as_ref()
+                .map(|ms| ms.iter().map(|m| m.clone_for_search()).collect()),
+            roll_noop_monsters: self.roll_noop_monsters,
+            override_event_queue: self.override_event_queue.clone(),
+            num_combats_this_act: self.num_combats_this_act,
+            combat_history: self.combat_history.clone(),
+            last_elite: self.last_elite,
+            elites: self.elites.clone(),
+            easy_pool_combats: self.easy_pool_combats.clone(),
+            hard_pool_combats: self.hard_pool_combats.clone(),
+            boss: self.boss,
+            event_shrine_pool: self.event_shrine_pool.clone(),
+            event_one_time_pool: self.event_one_time_pool.clone(),
+            event_act_pool: self.event_act_pool.clone(),
+            event_monster_chance: self.event_monster_chance,
+            event_chest_chance: self.event_chest_chance,
+            event_shop_chance: self.event_shop_chance,
+            common_relic_pool: self.common_relic_pool.clone(),
+            uncommon_relic_pool: self.uncommon_relic_pool.clone(),
+            rare_relic_pool: self.rare_relic_pool.clone(),
+            shop_relic_pool: self.shop_relic_pool.clone(),
+            boss_relic_pool: self.boss_relic_pool.clone(),
+            rewards: self.rewards.clone(),
+            potion_chance: self.potion_chance,
+            rare_card_chance: self.rare_card_chance,
+            boss_rewards: self.boss_rewards.clone(),
+            chest_size: self.chest_size,
+            shop: self.shop.clone(),
+            shop_remove_count: self.shop_remove_count,
+            in_combat: self.in_combat,
+            turn: self.turn,
+            monsters: self.monsters.iter().map(|m| m.clone_for_search()).collect(),
+            smoke_bombed: self.smoke_bombed,
+            energy: self.energy,
+            draw_pile: self.draw_pile.clone_map(&clone_card),
+            hand: clone_pile(&self.hand),
+            discard_pile: clone_pile(&self.discard_pile),
+            exhaust_pile: clone_pile(&self.exhaust_pile),
+            cur_card: self.cur_card.as_ref().map(&clone_card),
+            card_queue: vec![],
+            monster_turn_queue_all: self.monster_turn_queue_all.clone(),
+            monster_turn_queue_active: vec![],
+            should_add_extra_decay_status: self.should_add_extra_decay_status,
+            num_cards_played_this_turn: self.num_cards_played_this_turn,
+            num_times_took_damage: self.num_times_took_damage,
+            chosen_cards: self.chosen_cards.iter().map(&clone_card).collect(),
+        }
     }
 
     pub fn run_all_actions(&mut self) {

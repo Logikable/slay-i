@@ -18,6 +18,18 @@ pub trait GameState: Debug {
     fn valid_steps(&self, _: &Game) -> Option<Steps> {
         None
     }
+    // Forks this state for `Game::clone_for_search`. Only states that can sit
+    // on the stack while combat awaits player input need to implement this;
+    // the rest panic so an unsupported search entry point fails loudly.
+    fn clone_box(&self) -> Box<dyn GameState> {
+        panic!("clone_box not implemented for GameState {self:?}")
+    }
+}
+
+impl Clone for Box<dyn GameState> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 #[derive(Eq, PartialEq, Debug)]
@@ -76,5 +88,11 @@ impl GameStateManager {
     }
     pub fn peek(&self) -> &dyn GameState {
         self.stack.last().unwrap().as_ref()
+    }
+    pub fn clone_for_search(&self) -> GameStateManager {
+        GameStateManager {
+            stack: self.stack.iter().map(|s| s.clone_box()).collect(),
+            debug: self.debug,
+        }
     }
 }

@@ -15,6 +15,7 @@ enum Action {
     Rush,
 }
 
+#[derive(Clone)]
 pub struct GremlinNob {
     action: Action,
     history: MoveHistory<Action>,
@@ -30,6 +31,9 @@ impl GremlinNob {
 }
 
 impl MonsterBehavior for GremlinNob {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "gremlin nob"
     }

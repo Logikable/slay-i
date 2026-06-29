@@ -59,6 +59,11 @@ pub trait MonsterBehavior {
     fn roll_next_action(&mut self, r: &mut Rand, info: &MonsterInfo);
     fn take_turn(&mut self, this: CreatureRef, queue: &mut ActionQueue, info: &MonsterInfo);
     fn get_intent(&self) -> Intent;
+    // Forks this behavior for `Game::clone_for_search`. Monsters used as search
+    // targets implement this; others panic so unsupported scenarios fail loudly.
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        panic!("clone_box not implemented for monster {}", self.name())
+    }
 }
 
 pub struct Monster {
@@ -85,6 +90,12 @@ impl Monster {
         Monster {
             creature: Creature::new(name, hp),
             behavior: Box::new(m),
+        }
+    }
+    pub fn clone_for_search(&self) -> Monster {
+        Monster {
+            creature: self.creature.clone(),
+            behavior: self.behavior.clone_box(),
         }
     }
 }

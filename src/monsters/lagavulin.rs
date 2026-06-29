@@ -20,6 +20,7 @@ enum Action {
     Stunned,
 }
 
+#[derive(Clone)]
 pub struct Lagavulin {
     action: Action,
     history: MoveHistory<Action>,
@@ -41,6 +42,9 @@ impl Lagavulin {
 }
 
 impl MonsterBehavior for Lagavulin {
+    fn clone_box(&self) -> Box<dyn MonsterBehavior> {
+        Box::new(self.clone())
+    }
     fn name(&self) -> &'static str {
         "lagavulin"
     }

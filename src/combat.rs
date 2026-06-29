@@ -250,6 +250,9 @@ impl GameState for ResetCombatGameState {
 struct RollCombatRewardsGameState(RewardType);
 
 impl GameState for RollCombatRewardsGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(RollCombatRewardsGameState(self.0))
+    }
     fn run(&self, game: &mut Game) {
         if !game.smoke_bombed {
             let all_escaped = game
@@ -462,6 +465,9 @@ impl GameState for PlayerTurnBeginGameState {
 struct PlayerTurnGameState;
 
 impl GameState for PlayerTurnGameState {
+    fn clone_box(&self) -> Box<dyn GameState> {
+        Box::new(PlayerTurnGameState)
+    }
     fn run(&self, game: &mut Game) {
         if game.combat_finished() {
             game.state.push_state(CombatEndGameState);

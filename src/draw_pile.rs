@@ -106,6 +106,14 @@ impl<T: Debug> DrawPile<T> {
             DrawPileEnum::FrozenEye(d) => d.pop(),
         }
     }
+    // Clones the pile, mapping each value through `f`. Used to deep-clone the
+    // card `Rc`s when forking a game for search while preserving draw order.
+    pub fn clone_map<F: FnMut(&T) -> T>(&self, f: F) -> DrawPile<T> {
+        DrawPile(match &self.0 {
+            DrawPileEnum::Normal(d) => DrawPileEnum::Normal(d.clone_map(f)),
+            DrawPileEnum::FrozenEye(d) => DrawPileEnum::FrozenEye(d.clone_map(f)),
+        })
+    }
 }
 
 struct FrozenEyeDrawPileImpl<T: Debug>(Vec<T>);
@@ -164,6 +172,9 @@ impl<T: Debug> FrozenEyeDrawPileImpl<T> {
     pub fn pop(&mut self) -> T {
         self.0.pop().unwrap()
     }
+    fn clone_map<F: FnMut(&T) -> T>(&self, mut f: F) -> FrozenEyeDrawPileImpl<T> {
+        FrozenEyeDrawPileImpl(self.0.iter().map(|t| f(t)).collect())
+    }
 }
 
 #[derive(Debug)]
@@ -172,7 +183,7 @@ struct Node<T: Debug> {
     can_draw: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Edge {
     Unlock,  // drawing the source card lets the target card be drawn if it couldn't be
     Ordered, // the source card must be drawn after the target card
@@ -314,6 +325,17 @@ impl<T: Debug> DrawPileImpl<T> {
             }
         }
         self.take(c)
+    }
+    fn clone_map<F: FnMut(&T) -> T>(&self, mut f: F) -> DrawPileImpl<T> {
+        DrawPileImpl {
+            graph: self.graph.map(
+                |_, n| Node {
+                    value: f(&n.value),
+                    can_draw: n.can_draw,
+                },
+                |_, e| *e,
+            ),
+        }
     }
     fn possible_indexes_to_draw(&self) -> Vec<usize> {
         assert!(!self.is_empty());

@@ -1203,6 +1203,7 @@ fn whetstone(_: &mut i32, queue: &mut ActionQueue, _: &mut GameStateManager) {
     queue.push_bot(UpgradeTwoRandomInMasterAction(Some(CardType::Attack)));
 }
 
+#[derive(Clone)]
 pub struct Relic {
     class: RelicClass,
     value: i32,

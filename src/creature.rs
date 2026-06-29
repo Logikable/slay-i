@@ -14,7 +14,7 @@ use crate::{
     status::Status,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub enum CreatureState {
     #[default]
     Alive,
@@ -22,7 +22,7 @@ pub enum CreatureState {
     Escaped,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Creature {
     pub name: &'static str,
     pub max_hp: i32,

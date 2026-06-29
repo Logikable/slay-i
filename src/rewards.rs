@@ -25,7 +25,7 @@ pub enum RewardType {
     },
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Rewards {
     pub gold: i32,
     pub stolen_gold: i32,

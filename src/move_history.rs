@@ -1,4 +1,4 @@
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MoveHistory<T: Eq + Copy> {
     last_move: Option<T>,
     last_last_move: Option<T>,

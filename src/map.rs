@@ -4,6 +4,7 @@ use rand::{RngExt, seq::SliceRandom};
 
 use crate::{game::Rand, rng::rand_slice};
 
+#[derive(Clone)]
 pub struct Map {
     pub nodes: Vec<Vec<Node>>,
 }

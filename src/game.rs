@@ -1290,9 +1290,22 @@ impl Game {
         ));
         assert!(!self.state.is_empty());
 
+        let mut guard: u64 = 0;
         while !matches!(self.status, GameStatus::Defeat | GameStatus::Victory)
             && let Some(state) = self.state.pop_state()
         {
+            guard += 1;
+            if guard > 2_000_000 {
+                eprintln!(
+                    "game.run() runaway: top={:?} card_queue={} in_combat={:?} turn={} hand={:?}",
+                    self.state,
+                    self.card_queue.len(),
+                    self.in_combat,
+                    self.turn,
+                    self.hand.iter().map(|c| c.borrow().class).collect::<Vec<_>>(),
+                );
+                panic!("game.run() exceeded iteration guard (infinite action loop)");
+            }
             state.run(self);
             if state.valid_steps(self).is_some() {
                 self.state.push_boxed_state(state);

@@ -33,6 +33,13 @@ mod test;
 
 use game::Game;
 
+// Thread-local heaps: the ISMCTS search forks combats by deep-cloning the card
+// Rc graph, so the player + parallel eval allocate heavily across threads.
+// glibc malloc serializes that (multi-thread sweeps collapsed to ~1-2 cores);
+// mimalloc keeps them near-linear.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use crate::{
     cards::CardClass,
     game::{GameBuilder, GameStatus},

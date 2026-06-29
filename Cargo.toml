@@ -8,3 +8,4 @@ edition = "2024"
 "lazy_static" = "1.5"
 "dyn-eq" = "0.1.3"
 "petgraph" = { version = "0.8", default-features = false }
+mimalloc = "0.1.52"

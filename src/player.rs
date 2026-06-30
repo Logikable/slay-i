@@ -610,6 +610,31 @@ impl IsmctsAgent {
     }
 }
 
+// Search-budget multipliers for high-stakes fights. Elites and the boss push
+// the deck to its limit, where a better line most often decides the run, so
+// they get a multiple of the base budget; trivial normal fights don't. Tuning
+// these from 1x lifted held-out Act-1 clears 30.1% -> 36.3% (256 seeds, base
+// 150). Overridable via env for further sweeps.
+const ELITE_ITER_MULT: u32 = 4;
+const BOSS_ITER_MULT: u32 = 3;
+
+impl IsmctsAgent {
+    fn iters_for(&self, game: &Game) -> u32 {
+        let mult = |key: &str, default: u32| {
+            std::env::var(key)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(default)
+        };
+        let m = match game.in_combat {
+            CombatType::Boss => mult("BOSS_MULT", BOSS_ITER_MULT),
+            CombatType::Elite => mult("ELITE_MULT", ELITE_ITER_MULT),
+            _ => 1,
+        };
+        self.iters * m
+    }
+}
+
 impl CombatAgent for IsmctsAgent {
     fn act(&mut self, game: &Game) -> usize {
         let moves = legal_moves(game);
@@ -618,7 +643,8 @@ impl CombatAgent for IsmctsAgent {
         }
         let mut root = MctsNode::default();
         let mut policy = GreedyAgent;
-        for _ in 0..self.iters {
+        let iters = self.iters_for(game);
+        for _ in 0..iters {
             let mut sim = game.clone_for_search();
             let seed: u64 = self.rng.random();
             sim.rng = Rand::seed_from_u64(seed);
@@ -778,11 +804,9 @@ pub struct Weights {
 // CMA-tuned optimum from the first run (held-out 11.7% clear vs 8.6% for the
 // original hand-tuned values); re-running CMA now searches around it.
 const WEIGHT_BASE: [f64; NPARAM] = [
-    6.89, -2.45, 8.72, 2.42, 6.53, 4.31, 7.28, -100.0, 0.921, 26.2, 0.876, 2.0,
-    5.70,
+    6.89, -2.45, 8.72, 2.42, 6.53, 4.31, 7.28, -100.0, 0.921, 26.2, 0.876, 2.0, 5.70,
 ];
-const WEIGHT_RANGE: [f64; NPARAM] =
-    [6., 6., 6., 6., 6., 6., 8., 40., 0.3, 40., 0.4, 5., 5.];
+const WEIGHT_RANGE: [f64; NPARAM] = [6., 6., 6., 6., 6., 6., 8., 40., 0.3, 40., 0.4, 5., 5.];
 
 impl Default for Weights {
     fn default() -> Self {
@@ -1385,10 +1409,47 @@ fn player_eval() {
     }
 }
 
+// Snapshot of the master deck (for diagnosing what a boss-capable deck looks
+// like): size, #power cards, #good (non-basic, card_value >= 5), #junk
+// (status/curse).
+#[derive(Clone, Copy, Default)]
+struct DeckSnap {
+    size: u32,
+    powers: u32,
+    good: u32, // non-basic cards with card_value >= 5
+    junk: u32, // status/curse cards
+}
+
+fn deck_snap(game: &Game) -> DeckSnap {
+    let mut s = DeckSnap::default();
+    for c in game.master_deck.iter() {
+        let class = c.borrow().class;
+        s.size += 1;
+        if class.ty() == CardType::Power {
+            s.powers += 1;
+        }
+        if matches!(class.ty(), CardType::Status | CardType::Curse) {
+            s.junk += 1;
+        } else if card_value(class) >= 5 && !matches!(class, CardClass::Strike | CardClass::Defend)
+        {
+            s.good += 1;
+        }
+    }
+    s
+}
+
 // Stops at the Act-1 boss reward (Act 2 monsters aren't implemented yet).
 enum RunResult {
-    Cleared { hp: i32, floor: i32 },
-    Died { floor: i32 },
+    Cleared {
+        hp: i32,
+        floor: i32,
+        deck: DeckSnap,
+    },
+    Died {
+        floor: i32,
+        room: Option<RoomType>,
+        deck: DeckSnap,
+    },
     Stalled,
 }
 
@@ -1400,11 +1461,18 @@ fn play_full_run<A: CombatAgent>(
     let mut steps_taken = 0;
     loop {
         match game.status {
-            GameStatus::Defeat => return RunResult::Died { floor: game.floor },
+            GameStatus::Defeat => {
+                return RunResult::Died {
+                    floor: game.floor,
+                    room: game.cur_room,
+                    deck: deck_snap(game),
+                };
+            }
             GameStatus::Victory => {
                 return RunResult::Cleared {
                     hp: game.player.cur_hp,
                     floor: game.floor,
+                    deck: deck_snap(game),
                 };
             }
             GameStatus::Combat => {
@@ -1419,6 +1487,7 @@ fn play_full_run<A: CombatAgent>(
                     return RunResult::Cleared {
                         hp: game.player.cur_hp,
                         floor: game.floor,
+                        deck: deck_snap(game),
                     };
                 }
                 let i = agent.act(game).min(steps.len() - 1);
@@ -1453,24 +1522,55 @@ struct RunStats {
     // Deaths bucketed by floor (index = floor, clamped to 0..18) to see whether
     // runs die at the boss (~floor 16) or to mid-act attrition.
     death_floor_hist: [u32; 18],
+    // Deaths bucketed by room type: normal fight, elite, boss, other.
+    death_normal: u32,
+    death_elite: u32,
+    death_boss: u32,
+    death_other: u32,
+    // Deck composition (size/powers/good/junk) summed over boss-cleared vs
+    // boss-died runs, to see what separates a boss-capable deck.
+    clear_deck_size: u64,
+    clear_deck_powers: u64,
+    clear_deck_good: u64,
+    clear_deck_junk: u64,
+    bossdeath_deck_size: u64,
+    bossdeath_deck_powers: u64,
+    bossdeath_deck_good: u64,
+    bossdeath_deck_junk: u64,
 }
 
 impl RunStats {
     fn add(&mut self, r: RunResult) {
         self.trials += 1;
         match r {
-            RunResult::Cleared { hp, floor } => {
+            RunResult::Cleared { hp, floor, deck } => {
                 self.cleared += 1;
                 self.hp_sum += hp as i64;
                 self.floor_sum += floor as i64;
+                self.clear_deck_size += deck.size as u64;
+                self.clear_deck_powers += deck.powers as u64;
+                self.clear_deck_good += deck.good as u64;
+                self.clear_deck_junk += deck.junk as u64;
                 // A clear dwarfs any death so the optimizer can't trade clears
                 // for deeper deaths; hp is a small bonus among clears.
                 self.fitness_sum += 3.0 + 0.5 * (hp as f64 / 80.0);
             }
-            RunResult::Died { floor } => {
+            RunResult::Died { floor, room, deck } => {
                 self.deaths += 1;
                 self.death_floor_sum += floor as i64;
                 self.death_floor_hist[(floor as usize).min(17)] += 1;
+                match room {
+                    Some(RoomType::Monster) => self.death_normal += 1,
+                    Some(RoomType::Elite) => self.death_elite += 1,
+                    Some(RoomType::Boss) => {
+                        self.death_boss += 1;
+                        self.bossdeath_deck_size += deck.size as u64;
+                        self.bossdeath_deck_powers += deck.powers as u64;
+                        self.bossdeath_deck_good += deck.good as u64;
+                        self.bossdeath_deck_junk += deck.junk as u64;
+                    }
+                    _ => self.death_other += 1,
+                }
                 // Depth is only a weak tiebreaker among non-clears.
                 self.fitness_sum += 0.2 * (floor as f64 / 17.0);
             }
@@ -1487,6 +1587,18 @@ impl RunStats {
         self.errors += o.errors;
         self.trials += o.trials;
         self.fitness_sum += o.fitness_sum;
+        self.death_normal += o.death_normal;
+        self.death_elite += o.death_elite;
+        self.death_boss += o.death_boss;
+        self.death_other += o.death_other;
+        self.clear_deck_size += o.clear_deck_size;
+        self.clear_deck_powers += o.clear_deck_powers;
+        self.clear_deck_good += o.clear_deck_good;
+        self.clear_deck_junk += o.clear_deck_junk;
+        self.bossdeath_deck_size += o.bossdeath_deck_size;
+        self.bossdeath_deck_powers += o.bossdeath_deck_powers;
+        self.bossdeath_deck_good += o.bossdeath_deck_good;
+        self.bossdeath_deck_junk += o.bossdeath_deck_junk;
         for i in 0..18 {
             self.death_floor_hist[i] += o.death_floor_hist[i];
         }
@@ -1527,8 +1639,7 @@ fn run_worker(
         let seed = base.wrapping_add(i as u64);
         // Isolate latent engine panics from rare card/monster combos so one bad
         // seed doesn't abort the whole sweep; count it and move on.
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut game = GameBuilder::default()
                 .seed(seed)
@@ -1598,6 +1709,30 @@ fn eval_full_run(name: &str, iters: u32, trials: u32, threads: u32, base: u64) {
         }
     }
     println!();
+    println!(
+        "  death rooms: normal {} elite {} boss {} other {}",
+        total.death_normal, total.death_elite, total.death_boss, total.death_other
+    );
+    let avg4 = |s: u64, p: u64, g: u64, j: u64, n: u32| {
+        let n = n.max(1) as f64;
+        (s as f64 / n, p as f64 / n, g as f64 / n, j as f64 / n)
+    };
+    let (cs, cp, cg, cj) = avg4(
+        total.clear_deck_size,
+        total.clear_deck_powers,
+        total.clear_deck_good,
+        total.clear_deck_junk,
+        total.cleared,
+    );
+    let (bs, bp, bg, bj) = avg4(
+        total.bossdeath_deck_size,
+        total.bossdeath_deck_powers,
+        total.bossdeath_deck_good,
+        total.bossdeath_deck_junk,
+        total.death_boss,
+    );
+    println!("  boss-cleared deck: size {cs:.1} powers {cp:.2} good {cg:.2} junk {cj:.2}");
+    println!("  boss-died    deck: size {bs:.1} powers {bp:.2} good {bg:.2} junk {bj:.2}");
 }
 
 // Reproduce the engine runaway/empty-range panics on the tuned policy, one seed
@@ -1734,7 +1869,8 @@ fn cma_tune() {
     let d_s = 1.0 + 2.0 * (((mu_eff - 1.0) / (nf + 1.0)).sqrt() - 1.0).max(0.0) + c_s;
     let c_c = (4.0 + mu_eff / nf) / (nf + 4.0 + 2.0 * mu_eff / nf);
     let mut c1 = 2.0 / ((nf + 1.3).powi(2) + mu_eff);
-    let mut cmu = (2.0 * (mu_eff - 2.0 + 1.0 / mu_eff) / ((nf + 2.0).powi(2) + mu_eff)).min(1.0 - c1);
+    let mut cmu =
+        (2.0 * (mu_eff - 2.0 + 1.0 / mu_eff) / ((nf + 2.0).powi(2) + mu_eff)).min(1.0 - c1);
     let sep = (nf + 2.0) / 3.0; // separable speedup on the diagonal learning rates
     c1 = (c1 * sep).min(1.0);
     cmu = (cmu * sep).min(1.0 - c1);
@@ -1819,7 +1955,13 @@ baseline fitness {base_fit:.4}"
     print_weights(&bw);
     // Validate on held-out seeds the optimizer never saw.
     let val = run_eval(iters, trials * 2, threads, base + 1_000_000, bw);
-    let val0 = run_eval(iters, trials * 2, threads, base + 1_000_000, Weights::default());
+    let val0 = run_eval(
+        iters,
+        trials * 2,
+        threads,
+        base + 1_000_000,
+        Weights::default(),
+    );
     println!(
         "VALIDATION (held-out seeds): tuned cleared {}/{} fitness {:.4} | default cleared {}/{} fitness {:.4}",
         val.cleared,

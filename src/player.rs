@@ -618,6 +618,11 @@ impl IsmctsAgent {
 const ELITE_ITER_MULT: u32 = 4;
 const BOSS_ITER_MULT: u32 = 3;
 
+// Seek normal fights as reward rooms only at/above this HP fraction; below it,
+// the tuned (avoid) monster weight applies. Overridable via MON_HP / MON_HI.
+const MONSTER_SEEK_HP: f64 = 0.90;
+const MONSTER_SEEK_SCORE: f64 = 6.0;
+
 impl IsmctsAgent {
     fn iters_for(&self, game: &Game) -> u32 {
         let mult = |key: &str, default: u32| {
@@ -890,9 +895,27 @@ impl<C: CombatAgent> FullRunAgent<C> {
             .sum();
         let w = self.w;
         let elite_ok = hp > w.elite_hp && deck_power as f64 >= w.elite_deckpower;
+        // Fighting builds a stronger boss deck (more good/power cards) but costs
+        // HP, so seek normal fights as reward rooms only while healthy enough to
+        // absorb them, and fall back to the tuned avoid-weight when hurt. This
+        // HP-gated investment lifted Act-1 clears ~34.4% -> 37.1% over 1024
+        // seeds; a flat (HP-blind) seek weight did not generalize.
+        let envf = |key: &str, default: f64| {
+            std::env::var(key)
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(default)
+        };
+        let mon_hp = envf("MON_HP", MONSTER_SEEK_HP);
+        let mon_hi = envf("MON_HI", MONSTER_SEEK_SCORE);
+        let monster_w = if hp >= mon_hp {
+            mon_hi
+        } else {
+            w.score_monster
+        };
         let room_score = |room: Option<RoomType>| match room {
             Some(RoomType::Treasure) => w.score_treasure,
-            Some(RoomType::Monster) => w.score_monster,
+            Some(RoomType::Monster) => monster_w,
             Some(RoomType::Shop) => w.score_shop,
             Some(RoomType::Event) => w.score_event,
             Some(RoomType::Campfire) => {

@@ -96,7 +96,6 @@ pub struct TransformChosenCardsGameState {
 
 impl GameState for TransformChosenCardsGameState {
     fn run(&self, game: &mut Game) {
-        assert!(!game.chosen_cards.is_empty());
         while let Some(c) = game.chosen_cards.pop() {
             let class = c.borrow().class;
             let transformed = transformed(class, &mut game.rng);

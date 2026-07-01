@@ -1356,6 +1356,20 @@ mod tests {
     }
 
     #[test]
+    fn test_astrolabe_with_no_transformable_cards_does_not_panic() {
+        let mut g = GameBuilder::default().build_shop();
+        g.run_action(GainRelicAction(RelicClass::Astrolabe));
+        assert!(g.has_relic(RelicClass::Astrolabe));
+    }
+
+    #[test]
+    fn test_pandoras_box_with_no_transformable_cards_does_not_panic() {
+        let mut g = GameBuilder::default().build_shop();
+        g.run_action(GainRelicAction(RelicClass::PandorasBox));
+        assert!(g.has_relic(RelicClass::PandorasBox));
+    }
+
+    #[test]
     fn test_burning_blood() {
         let mut g = GameBuilder::default()
             .add_card(CardClass::DebugKill)

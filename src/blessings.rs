@@ -7,7 +7,7 @@ use crate::{
     },
     card::CardRef,
     cards::{random_curse, random_rare_colorless, random_rare_red, random_uncommon_colorless},
-    game::{Game, RareCardBaseChance, RunActionsGameState},
+    game::{Game, Rand, RareCardBaseChance, RunActionsGameState},
     master_deck::{
         ChooseRemoveFromMasterGameState, ChooseTransformMasterGameState,
         ChooseUpgradeMasterGameState,
@@ -15,7 +15,7 @@ use crate::{
     potion::random_common_potion,
     relic::{RelicClass, RelicRarity},
     rewards::{Rewards, RewardsGameState},
-    rng::{Rand, rand_slice},
+    rng::rand_slice,
     state::{GameState, Steps},
     step::Step,
 };
@@ -298,8 +298,10 @@ mod tests {
         CompositeReward, Drawback, compatible_rewards,
     };
     use crate::{
-        cards::CardType, game::GameBuilder, master_deck::ChooseRemoveFromMasterStep,
-        relic::RelicClass, rng::Rand,
+        cards::CardType,
+        game::{GameBuilder, Rand},
+        master_deck::ChooseRemoveFromMasterStep,
+        relic::RelicClass,
     };
 
     fn build_with_blessing(b: Blessing) -> crate::game::Game {
@@ -315,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_roll_offers_a_card_a_bonus_a_composite_and_a_boss_relic_blessing() {
-        let mut rng = Rand::seed_from_u64(0);
+        let mut rng = Rand::default();
         let rewards = Blessing::roll(&mut rng);
         assert_eq!(rewards.len(), 4);
         assert!(CARD_BLESSINGS.contains(&rewards[0]));

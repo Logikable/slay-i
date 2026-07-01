@@ -968,29 +968,44 @@ impl<C: CombatAgent> FullRunAgent<C> {
         chosen
     }
 
-    // Neow blessing: thin the deck if offered, else take lasting value.
+    // Neow blessing: prefer deck thinning and lasting value, discount the
+    // composite tier's drawback. Descriptions are `{:?}` of the Blessing, so a
+    // composite reads e.g. "Composite(Curse, RemoveTwo)" and scores additively.
     fn blessing(&self, game: &Game, steps: &[Box<dyn Step>]) -> usize {
         let mut best = 0;
         let mut best_score = i32::MIN;
+        let weights = [
+            ("NeowsLament", 90),
+            ("RemoveCard", 85),
+            ("RemoveTwo", 80),
+            ("CommonRelic", 80),
+            ("OneRareRelic", 75),
+            ("ThreeRareCards", 70),
+            ("RandomRareCard", 70),
+            ("BossRelic", 65),
+            ("ThreeCards", 60),
+            ("UpgradeCard", 55),
+            ("TransformTwoCards", 55),
+            ("TwentyPercentHpBonus", 55),
+            ("TransformCard", 50),
+            ("TenPercentMaxHp", 45),
+            ("RandomColorless", 40),
+            ("TwoFiftyGold", 40),
+            ("ThreePotions", 35),
+            ("HundredGold", 30),
+            ("Curse", -60),
+            ("TenPercentHpLoss", -30),
+            ("PercentDamage", -20),
+            ("NoGold", -10),
+        ];
         for i in indices_of(steps, "ChooseBlessingStep") {
             let d = steps[i].description(game);
-            let score = if d.contains("RemoveOne") {
-                100
-            } else if d.contains("CommonRelic") {
-                80
-            } else if d.contains("GainMaxHPSmall") {
-                60
-            } else if d.contains("TransformOne") {
-                50
-            } else if d.contains("RandomUncommonColorless") {
-                45
-            } else if d.contains("RandomPotion") {
-                30
-            } else if d.contains("RemoveRelic") {
-                -100
-            } else {
-                0
-            };
+            let mut score = 0;
+            for (needle, points) in weights {
+                if d.contains(needle) {
+                    score += points;
+                }
+            }
             if score > best_score {
                 best_score = score;
                 best = i;

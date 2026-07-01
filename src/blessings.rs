@@ -3,7 +3,7 @@ use crate::{
         add_card_class_to_master_deck::AddCardClassToMasterDeckAction, damage::DamageAction,
         decrease_max_hp::DecreaseMaxHPAction, gain_gold::GainGoldAction,
         gain_potion::GainPotionAction, gain_relic::GainRelicAction,
-        increase_max_hp::IncreaseMaxHPAction,
+        increase_max_hp::IncreaseMaxHPAction, remove_relic::RemoveRelicAction,
     },
     card::CardRef,
     cards::{random_curse, random_rare_colorless, random_rare_red, random_uncommon_colorless},
@@ -34,6 +34,7 @@ pub enum Blessing {
     NeowsLament,
     HundredGold,
     Composite(Drawback, CompositeReward),
+    BossRelic,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -121,6 +122,7 @@ impl Blessing {
             rand_slice(rng, &CARD_BLESSINGS),
             rand_slice(rng, &BONUS_BLESSINGS),
             Blessing::Composite(drawback, rand_slice(rng, &compatible_rewards(drawback))),
+            Blessing::BossRelic,
         ]
     }
 
@@ -181,6 +183,12 @@ impl Blessing {
             Composite(drawback, reward) => {
                 drawback.run(game);
                 reward.run(game);
+            }
+            BossRelic => {
+                let starter = game.relics[0].get_class();
+                game.action_queue.push_bot(RemoveRelicAction(starter));
+                let r = game.next_relic(RelicRarity::Boss);
+                game.action_queue.push_bot(GainRelicAction(r));
             }
         }
     }
@@ -306,13 +314,26 @@ mod tests {
     }
 
     #[test]
-    fn test_roll_offers_a_card_a_bonus_and_a_composite_blessing() {
+    fn test_roll_offers_a_card_a_bonus_a_composite_and_a_boss_relic_blessing() {
         let mut rng = Rand::seed_from_u64(0);
         let rewards = Blessing::roll(&mut rng);
-        assert_eq!(rewards.len(), 3);
+        assert_eq!(rewards.len(), 4);
         assert!(CARD_BLESSINGS.contains(&rewards[0]));
         assert!(BONUS_BLESSINGS.contains(&rewards[1]));
         assert!(matches!(rewards[2], Blessing::Composite(..)));
+        assert_eq!(rewards[3], Blessing::BossRelic);
+    }
+
+    #[test]
+    fn test_boss_relic_blessing_replaces_the_starter_relic() {
+        let mut g = GameBuilder::default()
+            .add_relic(RelicClass::BurningBlood)
+            .build_with_game_state(ChooseBlessingGameState {
+                rewards: vec![Blessing::BossRelic],
+            });
+        g.step_test(ChooseBlessingStep(Blessing::BossRelic));
+        assert!(!g.has_relic(RelicClass::BurningBlood));
+        assert_eq!(g.relics.len(), 1);
     }
 
     #[test]
@@ -325,20 +346,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_composite_no_gold_drawback_zeroes_gold_and_grants_rare_relic() {
-        let mut g = build_with_blessing(Blessing::Composite(
-            Drawback::NoGold,
-            CompositeReward::OneRareRelic,
-        ));
+    fn build_and_apply_composite(drawback: Drawback, reward: CompositeReward) -> crate::game::Game {
+        let mut g = build_with_blessing(Blessing::Composite(drawback, reward));
         g.gold = 250;
-        let relics = g.relics.len();
-        g.step_test(ChooseBlessingStep(Blessing::Composite(
-            Drawback::NoGold,
-            CompositeReward::OneRareRelic,
-        )));
+        g.step_test(ChooseBlessingStep(Blessing::Composite(drawback, reward)));
+        g
+    }
+
+    #[test]
+    fn test_composite_no_gold_drawback_zeroes_gold() {
+        let g = build_and_apply_composite(Drawback::NoGold, CompositeReward::TwentyPercentHpBonus);
         assert_eq!(g.gold, 0);
-        assert_eq!(g.relics.len(), relics + 1);
+    }
+
+    #[test]
+    fn test_composite_one_rare_relic_reward_grants_a_relic() {
+        let g = build_and_apply_composite(Drawback::NoGold, CompositeReward::OneRareRelic);
+        assert_eq!(g.relics.len(), 1);
     }
 
     #[test]
@@ -364,13 +388,13 @@ mod tests {
             .build_with_game_state(ChooseBlessingGameState {
                 rewards: vec![Blessing::Composite(
                     Drawback::Curse,
-                    CompositeReward::OneRareRelic,
+                    CompositeReward::TwoFiftyGold,
                 )],
             });
         let curses = curse_count(&g);
         g.step_test(ChooseBlessingStep(Blessing::Composite(
             Drawback::Curse,
-            CompositeReward::OneRareRelic,
+            CompositeReward::TwoFiftyGold,
         )));
         assert_eq!(curse_count(&g), curses + 1);
     }
@@ -379,12 +403,12 @@ mod tests {
     fn test_composite_percent_damage_drawback_loses_current_hp() {
         let mut g = build_with_blessing(Blessing::Composite(
             Drawback::PercentDamage,
-            CompositeReward::OneRareRelic,
+            CompositeReward::TwoFiftyGold,
         ));
         let cur_hp = g.player.cur_hp;
         g.step_test(ChooseBlessingStep(Blessing::Composite(
             Drawback::PercentDamage,
-            CompositeReward::OneRareRelic,
+            CompositeReward::TwoFiftyGold,
         )));
         assert_eq!(g.player.cur_hp, cur_hp - cur_hp / 10 * 3);
     }

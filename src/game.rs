@@ -20,7 +20,7 @@ use crate::actions::play_card::PlayCardAction;
 use crate::actions::reduce_status::ReduceStatusAction;
 use crate::actions::remove_status::RemoveStatusAction;
 use crate::actions::use_potion::UsePotionAction;
-use crate::blessings::ChooseBlessingGameState;
+use crate::blessings::{Blessing, ChooseBlessingGameState};
 use crate::campfire::CampfireGameState;
 use crate::card::{Card, CardPile, CardRef};
 use crate::cards::{CardClass, CardCost, CardRarity, CardType};
@@ -86,7 +86,9 @@ struct GameStartGameState;
 impl GameState for GameStartGameState {
     fn run(&self, game: &mut Game) {
         game.state.push_state(AscendGameState);
-        game.state.push_state(ChooseBlessingGameState);
+        game.state.push_state(ChooseBlessingGameState {
+            rewards: Blessing::roll(&mut game.rng),
+        });
         game.state.push_state(EnterActGameState);
     }
 }
@@ -1818,7 +1820,6 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use crate::{
-        blessings::{Blessing, ChooseBlessingStep},
         campfire::{CampfireRestStep, CampfireUpgradeStep},
         cards::CardClass,
         combat::PlayCardStep,
@@ -1844,7 +1845,7 @@ mod tests {
             RoomType::Event,
         ]);
 
-        g.step_test(ChooseBlessingStep(Blessing::GainMaxHPSmall));
+        g.step(1);
         g.step_test(AscendStep::new(0, 0));
         g.step_test(PlayCardStep {
             hand_index: 0,

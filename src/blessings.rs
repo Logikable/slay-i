@@ -5,13 +5,14 @@ use crate::{
         increase_max_hp::IncreaseMaxHPAction,
     },
     cards::random_rare_red,
-    game::{Game, RunActionsGameState},
+    game::{Game, RareCardBaseChance, RunActionsGameState},
     master_deck::{
         ChooseRemoveFromMasterGameState, ChooseTransformMasterGameState,
         ChooseUpgradeMasterGameState,
     },
     potion::random_common_potion,
     relic::{RelicClass, RelicRarity},
+    rewards::{Rewards, RewardsGameState},
     rng::{Rand, rand_slice},
     state::{GameState, Steps},
     step::Step,
@@ -19,6 +20,7 @@ use crate::{
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Blessing {
+    ThreeCards,
     RemoveCard,
     UpgradeCard,
     TransformCard,
@@ -30,7 +32,8 @@ pub enum Blessing {
     HundredGold,
 }
 
-const CARD_BLESSINGS: [Blessing; 4] = [
+const CARD_BLESSINGS: [Blessing; 5] = [
+    Blessing::ThreeCards,
     Blessing::RemoveCard,
     Blessing::UpgradeCard,
     Blessing::TransformCard,
@@ -56,6 +59,11 @@ impl Blessing {
     pub fn run(&self, game: &mut Game) {
         use Blessing::*;
         match self {
+            ThreeCards => {
+                let cards = Rewards::gen_card_reward(game, RareCardBaseChance::Normal);
+                game.rewards.add_cards(cards);
+                game.state.push_state(RewardsGameState);
+            }
             RemoveCard => {
                 game.state.push_state(ChooseRemoveFromMasterGameState {
                     num_cards_remaining: 1,
@@ -184,6 +192,19 @@ mod tests {
         let mut g = build_with_blessing(Blessing::ThreePotions);
         g.step_test(ChooseBlessingStep(Blessing::ThreePotions));
         assert!(g.potions.iter().all(|p| p.is_some()));
+    }
+
+    #[test]
+    fn test_three_cards_blessing_adds_a_card_to_the_master_deck() {
+        let mut g = GameBuilder::default()
+            .ironclad_starting_deck()
+            .build_with_game_state(ChooseBlessingGameState {
+                rewards: vec![Blessing::ThreeCards],
+            });
+        let size = g.master_deck.len();
+        g.step_test(ChooseBlessingStep(Blessing::ThreeCards));
+        g.step(0);
+        assert_eq!(g.master_deck.len(), size + 1);
     }
 
     #[test]

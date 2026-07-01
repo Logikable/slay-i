@@ -4,7 +4,8 @@ use crate::{
         gain_potion::GainPotionAction, gain_relic::GainRelicAction,
         increase_max_hp::IncreaseMaxHPAction,
     },
-    cards::random_rare_red,
+    card::CardRef,
+    cards::{random_rare_red, random_uncommon_colorless},
     game::{Game, RareCardBaseChance, RunActionsGameState},
     master_deck::{
         ChooseRemoveFromMasterGameState, ChooseTransformMasterGameState,
@@ -21,6 +22,7 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Blessing {
     ThreeCards,
+    RandomColorless,
     RemoveCard,
     UpgradeCard,
     TransformCard,
@@ -32,8 +34,9 @@ pub enum Blessing {
     HundredGold,
 }
 
-const CARD_BLESSINGS: [Blessing; 5] = [
+const CARD_BLESSINGS: [Blessing; 6] = [
     Blessing::ThreeCards,
+    Blessing::RandomColorless,
     Blessing::RemoveCard,
     Blessing::UpgradeCard,
     Blessing::TransformCard,
@@ -61,6 +64,17 @@ impl Blessing {
         match self {
             ThreeCards => {
                 let cards = Rewards::gen_card_reward(game, RareCardBaseChance::Normal);
+                game.rewards.add_cards(cards);
+                game.state.push_state(RewardsGameState);
+            }
+            RandomColorless => {
+                let mut cards: Vec<CardRef> = Vec::new();
+                while cards.len() < 3 {
+                    let class = random_uncommon_colorless(&mut game.rng);
+                    if cards.iter().all(|c| c.borrow().class != class) {
+                        cards.push(game.new_card(class));
+                    }
+                }
                 game.rewards.add_cards(cards);
                 game.state.push_state(RewardsGameState);
             }
@@ -205,6 +219,23 @@ mod tests {
         g.step_test(ChooseBlessingStep(Blessing::ThreeCards));
         g.step(0);
         assert_eq!(g.master_deck.len(), size + 1);
+    }
+
+    #[test]
+    fn test_random_colorless_blessing_adds_an_uncommon_colorless_card() {
+        use crate::cards::{CardColor, CardRarity};
+        let mut g = GameBuilder::default()
+            .ironclad_starting_deck()
+            .build_with_game_state(ChooseBlessingGameState {
+                rewards: vec![Blessing::RandomColorless],
+            });
+        let size = g.master_deck.len();
+        g.step_test(ChooseBlessingStep(Blessing::RandomColorless));
+        g.step(0);
+        assert_eq!(g.master_deck.len(), size + 1);
+        let added = g.master_deck.last().unwrap().borrow();
+        assert_eq!(added.class.color(), CardColor::Colorless);
+        assert_eq!(added.class.rarity(), CardRarity::Uncommon);
     }
 
     #[test]

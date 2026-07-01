@@ -316,6 +316,10 @@ impl GameState for EnterActGameState {
                 Event::Sssserpent,
                 Event::ShiningLight,
                 Event::LivingWall,
+                Event::DeadAdventurer,
+                Event::GoldenIdol,
+                Event::Mushrooms,
+                Event::ScrapOoze,
             ];
             game.easy_pool_combats = vec![
                 Combat::Cultist,
@@ -1830,6 +1834,24 @@ mod tests {
         rewards::{BossRewardSkipStep, RewardExitStep},
         state::ContinueStep,
     };
+
+    #[test]
+    fn test_act_1_event_pool_contains_the_implemented_act_1_events() {
+        let g = GameBuilder::default().build();
+        for e in [
+            Event::BigFish,
+            Event::WorldOfGoop,
+            Event::Sssserpent,
+            Event::ShiningLight,
+            Event::LivingWall,
+            Event::DeadAdventurer,
+            Event::GoldenIdol,
+            Event::Mushrooms,
+            Event::ScrapOoze,
+        ] {
+            assert!(g.event_act_pool.contains(&e));
+        }
+    }
 
     #[test]
     fn test_game() {
